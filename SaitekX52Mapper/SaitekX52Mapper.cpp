@@ -20,7 +20,7 @@ enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, Capt
     Hold, Blend, Validation, Stale, CaptureLabel, IdentifySelected,
     ImportBF3, ImportBF4, ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice,
     AddProfileMapping, RemoveProfileMapping, ExportPr0, ProfileMappingList, ProfileInfo, MfdRefresh, MfdClutch, MfdLatched, MfdLight, LedLight,
-    Clock1Format, Clock2Format, Clock3Format, MfdLevel, LedLevel, MfdApplyLevels, MfdInfo,
+    ClockSelect, ClockFormat, LedLevel, LedPercent, MfdInfo,
     FilterThrottle, FilterSide, FilterTop, FilterSlider, FilterTime, FilterJitter, FilterApply };
 struct Child { HWND handle{}; int page{-1}; int x{}, y{}, w{}, h{}; bool stretchX{}, stretchY{}; };
 std::wstring Text(HWND window)
@@ -70,21 +70,26 @@ struct Application {
     int page{}, dpi{96};
     std::future<MfdSettings> mfdTask;
     std::optional<MfdSettings> mfdSettings;
-    DWORD rememberedMfd{100}, rememberedLed{100};
+    std::optional<DWORD> pendingLed;
+    ULONGLONG nextLedWrite{};
+    bool liveLedWrite{};
+    DWORD rememberedLed{100};
     bool filterUiLoaded{}, mfdTried{};
     bool Checked(int id) const { return SendMessageW(Item(id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
     void Check(int id, bool value) { SendMessageW(Item(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
-    void MfdEnabled(bool enabled)
+    void MfdEnabled(bool enabled, bool keepSlider = false)
     {
-        for (const auto id : {MfdClutch, MfdLatched, MfdLight, LedLight, Clock1Format, Clock2Format, Clock3Format,
-            MfdLevel, LedLevel, MfdApplyLevels}) EnableWindow(Item(id), enabled);
+        for (const auto id : {MfdClutch, MfdLatched, MfdLight, LedLight, ClockSelect, ClockFormat}) EnableWindow(Item(id), enabled);
+        // Do not disable/re-enable a captured trackbar: doing so interrupts dragging.
+        if (!keepSlider) EnableWindow(Item(LedLevel), enabled);
         EnableWindow(Item(MfdLatched), enabled && Checked(MfdClutch));
     }
-    void StartMfd(std::optional<std::pair<MfdOption, DWORD>> change = {})
+    void StartMfd(std::optional<std::pair<MfdOption, DWORD>> change = {}, bool fromSlider = false)
     {
         if (mfdTask.valid()) return;
         mfdTried = true;
-        MfdEnabled(false); EnableWindow(Item(MfdRefresh), FALSE);
+        liveLedWrite = fromSlider;
+        MfdEnabled(false, fromSlider); EnableWindow(Item(MfdRefresh), FALSE);
         SetText(Item(MfdInfo), change ? L"Applying setting and reading it back from the driver..." : L"Reading settings from the X52 driver...");
         mfdTask = std::async(std::launch::async, [change] {
             std::vector<std::wstring> paths;
@@ -93,26 +98,63 @@ struct Application {
             return change ? SetMfdOption(paths.front(), change->first, change->second) : ReadMfdSettings(paths.front());
         });
     }
+    void ShowClockFormat()
+    {
+        const auto clock = SendMessageW(Item(ClockSelect), CB_GETCURSEL, 0, 0);
+        if (mfdSettings && clock >= 0 && clock < 3)
+            SendMessageW(Item(ClockFormat), CB_SETCURSEL, mfdSettings->twelveHour[static_cast<std::size_t>(clock)] ? 1 : 0, 0);
+    }
+    void SendPendingLed()
+    {
+        if (!pendingLed || !mfdSettings || mfdTask.valid()) return;
+        if (*pendingLed == mfdSettings->ledBrightness) {
+            pendingLed.reset(); MfdEnabled(true); EnableWindow(Item(MfdRefresh), TRUE); return;
+        }
+        if (GetTickCount64() < nextLedWrite) return;
+        const auto value = *pendingLed;
+        pendingLed.reset();
+        nextLedWrite = GetTickCount64() + 33;
+        StartMfd({{MfdOption::LedBrightness, value}}, true);
+    }
+    void LedSlider()
+    {
+        const auto value = static_cast<DWORD>(SendMessageW(Item(LedLevel), TBM_GETPOS, 0, 0));
+        SetText(Item(LedPercent), std::to_wstring(value) + L"%");
+        if (mfdSettings) {
+            // Replace a pending value, including when reversing to the previous
+            // readback while a different write is still in flight.
+            pendingLed = value;
+            SendPendingLed();
+        }
+    }
     void PollMfd()
     {
         if (page == 5 && !mfdTried) StartMfd();
+        SendPendingLed();
         if (!mfdTask.valid() || mfdTask.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
         try {
             mfdSettings = mfdTask.get(); const auto& values = *mfdSettings;
             Check(MfdClutch, values.clutch); Check(MfdLatched, values.latched);
             Check(MfdLight, values.mfdBrightness != 0); Check(LedLight, values.ledBrightness != 0);
-            if (values.mfdBrightness) rememberedMfd = values.mfdBrightness;
             if (values.ledBrightness) rememberedLed = values.ledBrightness;
-            SetText(Item(MfdLevel), std::to_wstring(values.mfdBrightness));
-            SetText(Item(LedLevel), std::to_wstring(values.ledBrightness));
-            for (int i = 0; i < 3; ++i) Check(Clock1Format + i, values.twelveHour[static_cast<std::size_t>(i)]);
+            if (!liveLedWrite) {
+                SendMessageW(Item(LedLevel), TBM_SETPOS, TRUE, values.ledBrightness);
+                SetText(Item(LedPercent), std::to_wstring(values.ledBrightness) + L"%");
+            }
+            ShowClockFormat();
             MfdEnabled(true);
-            SetText(Item(MfdInfo), L"Settings read back from the Logitech driver. Changes apply immediately.\r\nTurn off clutch mode to make I available as a normal button; latching only changes clutch behaviour.");
+            SetText(Item(MfdInfo), values.clutch ?
+                L"I is currently reserved for Logitech profile selection. Uncheck the option above to use I as a regular button.\r\nPress once to latch means press I to enter profile selection, then press it again to exit; otherwise hold I." :
+                L"I is available as a regular button, including in our profile editor.\r\nChanges are checked against the driver after applying.");
         } catch (const std::exception& error) {
+            pendingLed.reset();
             mfdSettings.reset(); MfdEnabled(false);
             SetText(Item(MfdInfo), L"Settings unavailable: " + Wide(error.what()) + L"\r\nRefresh to read the actual state before making another change.");
         }
         EnableWindow(Item(MfdRefresh), TRUE);
+        liveLedWrite = false;
+        SendPendingLed();
+        if (pendingLed) { MfdEnabled(false, true); EnableWindow(Item(MfdRefresh), FALSE); }
     }
 
     ~Application()
@@ -161,12 +203,12 @@ struct Application {
         Add(L"BUTTON", L"Identify selected input...", IdentifySelected, -1, 730, 129, 246, 32, WS_TABSTOP);
         tabs = Add(WC_TABCONTROLW, L"", Tabs, -1, 24, 177, 952, 30, WS_TABSTOP, true);
         int i = 0;
-        for (const auto label : {L"Live inputs", L"Learn controls", L"Connection health", L"HID inventory", L"Battlefield profiles", L"MFD & inputs"}) {
+        for (const auto label : {L"Live inputs", L"Learn controls", L"Connection health", L"HID inventory", L"Battlefield profiles", L"MFD & LEDs"}) {
             TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<wchar_t*>(label);
             if (TabCtrl_InsertItem(tabs, i++, &item) == -1) throw std::runtime_error("Unable to create tab");
         }
         Add(L"STATIC", L"Double-click a HID row (or press Enter) to link it to a physical X52 button, hat, switch or axis.", 0, 0, 24, 220, 952, 24, 0, true);
-        list = Add(WC_LISTVIEWW, L"", ControlList, 0, 24, 254, 952, 284,
+        list = Add(WC_LISTVIEWW, L"", ControlList, 0, 24, 254, 952, 204,
             WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, true, true);
         ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
         i = 0;
@@ -177,7 +219,7 @@ struct Application {
             item.cx = MulDiv(column.second, dpi, 96);
             if (ListView_InsertColumn(list, i++, &item) == -1) throw std::runtime_error("Unable to create list column");
         }
-        raw = Add(L"EDIT", L"Waiting for reports", 0, 0, 24, 554, 952, 120,
+        raw = Add(L"EDIT", L"Waiting for reports", 0, 0, 24, 474, 952, 74,
             ES_READONLY | ES_MULTILINE | WS_VSCROLL | WS_TABSTOP, true);
         Add(L"STATIC", L"1. Start a baseline.   2. Move ONE control.   3. Select its HID usage and identify it in the photo picker.", 0, 1, 24, 220, 952, 24, 0, true);
         Add(L"BUTTON", L"Start Learn Mode", Learn, 1, 24, 256, 164, 32, WS_TABSTOP);
@@ -231,31 +273,34 @@ struct Application {
         for (const auto item : {ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice, AddProfileMapping, RemoveProfileMapping, ExportPr0}) EnableWindow(Item(item), FALSE);
         Add(L"STATIC", L"X52 device settings", 0, 5, 24, 220, 500, 24);
         Add(L"BUTTON", L"Refresh from X52", MfdRefresh, 5, 752, 215, 224, 30, WS_TABSTOP);
-        Add(L"BUTTON", L"Enable clutch mode", MfdClutch, 5, 24, 255, 260, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
-        Add(L"BUTTON", L"Latched clutch button", MfdLatched, 5, 310, 255, 280, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"BUTTON", L"Use I for Logitech profile selection", MfdClutch, 5, 24, 255, 360, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"BUTTON", L"Press once to latch (instead of holding I)", MfdLatched, 5, 420, 255, 440, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
         Add(L"BUTTON", L"MFD backlight on", MfdLight, 5, 24, 293, 235, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
-        Add(L"EDIT", L"100", MfdLevel, 5, 270, 290, 60, 28, ES_NUMBER | WS_TABSTOP);
-        Add(L"STATIC", L"%", 0, 5, 338, 295, 25, 22);
-        Add(L"BUTTON", L"Button LEDs on", LedLight, 5, 395, 293, 200, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
-        Add(L"EDIT", L"100", LedLevel, 5, 600, 290, 60, 28, ES_NUMBER | WS_TABSTOP);
-        Add(L"STATIC", L"%", 0, 5, 668, 295, 25, 22);
-        Add(L"BUTTON", L"Apply brightness", MfdApplyLevels, 5, 752, 290, 224, 30, WS_TABSTOP);
-        for (int clock = 0; clock < 3; ++clock) {
-            const auto label = L"Clock " + std::to_wstring(clock + 1) + L": 12-hour format";
-            Add(L"BUTTON", label.c_str(), Clock1Format + clock, 5, 24 + clock * 310, 332, 295, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
-        }
-        Add(L"STATIC", L"Open this tab to read the device settings.", MfdInfo, 5, 24, 375, 952, 62, 0, true);
-        Add(L"STATIC", L"Analogue noise filtering", 0, 5, 24, 454, 500, 25);
+        Add(L"BUTTON", L"Button LEDs on", LedLight, 5, 24, 332, 210, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"STATIC", L"LED brightness", 0, 5, 250, 332, 130, 26);
+        Add(TRACKBAR_CLASSW, L"", LedLevel, 5, 385, 326, 490, 38, TBS_HORZ | TBS_NOTICKS | WS_TABSTOP);
+        SendMessageW(Item(LedLevel), TBM_SETRANGE, FALSE, MAKELPARAM(0, 100));
+        SendMessageW(Item(LedLevel), TBM_SETPAGESIZE, 0, 10);
+        Add(L"STATIC", L"--%", LedPercent, 5, 891, 332, 70, 26);
+        Add(L"STATIC", L"Clock on the MFD", 0, 5, 24, 382, 150, 26);
+        Add(L"COMBOBOX", L"", ClockSelect, 5, 180, 377, 260, 160, CBS_DROPDOWNLIST | WS_TABSTOP);
+        FillCombo(ClockSelect, {L"Clock 1", L"Clock 2", L"Clock 3"});
+        Add(L"STATIC", L"Time format", 0, 5, 460, 382, 110, 26);
+        Add(L"COMBOBOX", L"", ClockFormat, 5, 580, 377, 395, 160, CBS_DROPDOWNLIST | WS_TABSTOP);
+        FillCombo(ClockFormat, {L"24-hour (e.g. 18:30)", L"12-hour (e.g. 6:30 PM)"});
+        Add(L"STATIC", L"The X52 has three clock slots. Select a slot above to change its display format.\r\nTime zones remain as set in Logitech's control panel. LED brightness updates live as you drag the slider.", 0, 5, 24, 420, 952, 54, 0, true);
+        Add(L"STATIC", L"Open this tab to read the device settings.", MfdInfo, 5, 24, 500, 952, 75, 0, true);
+        Add(L"STATIC", L"Noise filtering for identified throttle axes", 0, 0, 24, 558, 952, 22, 0, true);
         for (int axis = 0; axis < 4; ++axis) {
             constexpr std::array labels{L"Throttle lever", L"Side rotary", L"Top rotary", L"Thumb slider"};
-            Add(L"BUTTON", labels[static_cast<std::size_t>(axis)], FilterThrottle + axis, 5, 24 + axis * 238, 492, 230, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+            Add(L"BUTTON", labels[static_cast<std::size_t>(axis)], FilterThrottle + axis, 0, 24 + axis * 238, 582, 230, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
         }
-        Add(L"STATIC", L"Smoothing (ms)", 0, 5, 24, 540, 145, 24);
-        Add(L"EDIT", L"45", FilterTime, 5, 173, 534, 70, 28, WS_TABSTOP);
-        Add(L"STATIC", L"Jitter tolerance (raw counts)", 0, 5, 270, 540, 225, 24);
-        Add(L"EDIT", L"1", FilterJitter, 5, 505, 534, 70, 28, WS_TABSTOP);
-        Add(L"BUTTON", L"Save input filtering", FilterApply, 5, 752, 534, 224, 30, WS_TABSTOP);
-        Add(L"STATIC", L"Filtering uses your identified physical axis links. Raw values and capture evidence stay unchanged.\r\nNormalized and safe internal inputs are smoothed; stick axes, hats and buttons stay responsive.\r\nHigher smoothing reduces jitter but adds delay. These settings affect this mapper; game output is not implemented yet.", 0, 5, 24, 593, 952, 87, 0, true);
+        Add(L"STATIC", L"Smoothing (ms)", 0, 0, 24, 622, 145, 24);
+        Add(L"EDIT", L"45", FilterTime, 0, 173, 616, 70, 28, WS_TABSTOP);
+        Add(L"STATIC", L"Jitter tolerance (raw counts)", 0, 0, 270, 622, 225, 24);
+        Add(L"EDIT", L"1", FilterJitter, 0, 505, 616, 70, 28, WS_TABSTOP);
+        Add(L"BUTTON", L"Save input filtering", FilterApply, 0, 752, 616, 224, 30, WS_TABSTOP);
+        Add(L"STATIC", L"Filters smooth Normalized and Safe internal values here. Raw readings stay unchanged; direct game input is unaffected.", 0, 0, 24, 662, 952, 27, 0, true);
         MfdEnabled(false);
         footer = Add(L"STATIC", L"", 0, -1, 24, 694, 952, 40, 0, true);
         Fonts();
@@ -265,6 +310,7 @@ struct Application {
         notification = RegisterDeviceNotificationW(window, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
         if (!notification) throw WindowsException("RegisterDeviceNotificationW", GetLastError());
         if (!SetTimer(window, 1, 100, nullptr)) throw WindowsException("SetTimer", GetLastError());
+        if (!SetTimer(window, 2, 33, nullptr)) throw WindowsException("SetTimer (live brightness)", GetLastError());
         service.Start();
         Layout();
     }
@@ -275,7 +321,7 @@ struct Application {
         const auto extraY = MulDiv(rect.bottom, 96, dpi) - 750;
         for (const auto& child : children) {
             auto y = child.y;
-            if (child.handle == raw || child.handle == footer) y += extraY;
+            if (child.handle == footer || (child.page == 0 && child.y >= 474)) y += extraY;
             if (!MoveWindow(child.handle, MulDiv(child.x, dpi, 96), MulDiv(y, dpi, 96),
                 MulDiv(std::max(1, child.w + (child.stretchX ? extraX : 0)), dpi, 96),
                 MulDiv(std::max(1, child.h + (child.stretchY ? extraY : 0)), dpi, 96), TRUE))
@@ -392,26 +438,15 @@ struct Application {
         case MfdRefresh: StartMfd(); break;
         case MfdClutch: StartMfd({{MfdOption::Clutch, Checked(id)}}); break;
         case MfdLatched: StartMfd({{MfdOption::Latched, Checked(id)}}); break;
-        case MfdLight: StartMfd({{MfdOption::MfdBrightness, Checked(id) ? rememberedMfd : 0}}); break;
+        case MfdLight: StartMfd({{MfdOption::MfdBrightness, Checked(id) ? 100u : 0u}}); break;
         case LedLight: StartMfd({{MfdOption::LedBrightness, Checked(id) ? rememberedLed : 0}}); break;
-        case Clock1Format: case Clock2Format: case Clock3Format:
-            StartMfd({{static_cast<MfdOption>(static_cast<int>(MfdOption::Clock1) + id - Clock1Format), Checked(id)}}); break;
-        case MfdApplyLevels: {
-            const auto mfd = Numeric(Item(MfdLevel)), led = Numeric(Item(LedLevel));
-            if (mfd < 0 || mfd > 100 || led < 0 || led > 100 || std::floor(mfd) != mfd || std::floor(led) != led)
-                throw std::runtime_error("Brightness must be a whole percentage from 0 to 100");
-            if (mfdTask.valid() || !mfdSettings) break;
-            MfdEnabled(false); EnableWindow(Item(MfdRefresh), FALSE);
-            SetText(Item(MfdInfo), L"Applying brightness and reading it back...");
-            const auto previous = *mfdSettings;
-            mfdTask = std::async(std::launch::async, [mfd, led, previous] {
-                std::vector<std::wstring> paths;
-                for (const auto& device : EnumerateHid()) if (device.isPs28()) paths.push_back(device.path);
-                if (paths.size() != 1) throw std::runtime_error("Connect exactly one original X52");
-                if (mfd != previous.mfdBrightness) (void)SetMfdOption(paths.front(), MfdOption::MfdBrightness, static_cast<DWORD>(mfd));
-                if (led != previous.ledBrightness) (void)SetMfdOption(paths.front(), MfdOption::LedBrightness, static_cast<DWORD>(led));
-                return ReadMfdSettings(paths.front());
-            }); break;
+        case ClockSelect: ShowClockFormat(); break;
+        case ClockFormat: {
+            const auto clock = SendMessageW(Item(ClockSelect), CB_GETCURSEL, 0, 0);
+            const auto format = SendMessageW(Item(ClockFormat), CB_GETCURSEL, 0, 0);
+            if (clock >= 0 && clock < 3 && format >= 0 && format < 2)
+                StartMfd({{static_cast<MfdOption>(static_cast<int>(MfdOption::Clock1) + clock), static_cast<DWORD>(format)}});
+            break;
         }
         case FilterApply: {
             x52::Command command{CommandType::ConfigureFilters};
@@ -505,7 +540,7 @@ struct Application {
         SetText(Item(ProfileInfo), L"BF" + std::to_wstring(game) + L": imported " + std::to_wstring(battlefieldBindings.size()) +
             L" binding records. Export supports keyboard / left-right mouse commands on buttons. Axes stay in Battlefield.\r\n" +
             (unresolved ? std::to_wstring(unresolved) + L" saved overrides need reassignment. " : L"") +
-            L"Pinkie/clutch remain reserved; hats await a matching profiler sample. Mode inheritance follows Logitech defaults.");
+            L"Pinkie stays reserved for shifting. To use I, turn off Logitech profile selection in MFD & LEDs. Hats are not exported yet.");
     }
     void FilterProfileActions()
     {
@@ -557,6 +592,8 @@ struct Application {
           if (!stream) throw std::runtime_error("Could not write profile draft"); }
         if (!MoveFileExW(temporary.c_str(), file.c_str(), MOVEFILE_WRITE_THROUGH)) throw WindowsException("Publish profile draft", GetLastError());
         SetText(Item(ProfileInfo), L"Exported: " + file.wstring() + L"\r\nOpen this draft in Logitech's profiler and test it before activating. It has not been loaded or written to joystick memory.");
+        if (std::any_of(profileMappings.begin(), profileMappings.end(), [](const auto& mapping) { return mapping.control == "0x0009001E"; }))
+            SetText(Item(ProfileInfo), L"Exported: " + file.wstring() + L"\r\nThis profile uses I. Turn off 'Use I for Logitech profile selection' in MFD & LEDs before using it. Profile not activated.");
         if (reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
             throw std::runtime_error("Profile saved, but its folder could not be opened");
     }
@@ -594,13 +631,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             SetWindowPos(window, nullptr, rect->left, rect->top, rect->right - rect->left, rect->bottom - rect->top, SWP_NOZORDER | SWP_NOACTIVATE);
             app->Layout(); return 0;
         }
-        case WM_TIMER: if (wParam == 1) app->Poll(); return 0;
+        case WM_TIMER:
+            if (wParam == 1) app->Poll();
+            else if (wParam == 2) app->PollMfd();
+            return 0;
         case WM_CTLCOLORSTATIC:
             SetBkColor(reinterpret_cast<HDC>(wParam), GetSysColor(COLOR_WINDOW));
             SetTextColor(reinterpret_cast<HDC>(wParam), GetSysColor(COLOR_WINDOWTEXT));
             return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+        case WM_HSCROLL:
+            if (reinterpret_cast<HWND>(lParam) == app->Item(LedLevel)) app->LedSlider();
+            return 0;
         case WM_COMMAND:
-            if (HIWORD(wParam) == BN_CLICKED || (LOWORD(wParam) == ProfileContext && HIWORD(wParam) == CBN_SELCHANGE)) app->Command(LOWORD(wParam)); return 0;
+            if (HIWORD(wParam) == BN_CLICKED || ((LOWORD(wParam) == ProfileContext || LOWORD(wParam) == ClockSelect || LOWORD(wParam) == ClockFormat) && HIWORD(wParam) == CBN_SELCHANGE)) app->Command(LOWORD(wParam)); return 0;
         case WM_NOTIFY:
             if (reinterpret_cast<NMHDR*>(lParam)->idFrom == ControlList) {
                 const auto code = reinterpret_cast<NMHDR*>(lParam)->code;
@@ -622,7 +665,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             }
             return TRUE;
         case WM_DESTROY:
-            KillTimer(window, 1); app->window = nullptr; PostQuitMessage(0); return 0;
+            KillTimer(window, 1); KillTimer(window, 2); app->window = nullptr; PostQuitMessage(0); return 0;
         }
     } catch (const std::exception& error) {
         MessageBoxW(window, Wide(error.what()).c_str(), L"X52 Inspector", MB_OK | MB_ICONERROR);
@@ -634,7 +677,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 {
     try {
-        INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES};
+        INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES};
         if (!InitCommonControlsEx(&controls)) throw WindowsException("InitCommonControlsEx", GetLastError());
         Application app;
         WNDCLASSEXW windowClass{};

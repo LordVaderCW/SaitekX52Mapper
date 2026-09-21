@@ -12,6 +12,9 @@ or autonomous profile activation. Never infer PS28 controls from X52 Pro. Record
 verified status honestly. A valid HID packet is not proof that the stick is healthy.
 Stationary input is not evidence of failure. Do not add protocol signatures without
 repeatable captures. No output/feature writes until a legitimate PS28 command is proven.
+The user also authorized MFD/LED/clutch settings on 2026-09-21. The bounded
+Logitech 8.0.116.0 driver settings adapter is documented in docs/mfd-settings.md;
+keep version/identity checks and readback. Do not extrapolate USB or Pro commands.
 
 No injection, hooks, game patches, anti-cheat interference, service restarts, USB
 disable/enable or driver installation. Software reopen is not an electrical reset.

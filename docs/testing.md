@@ -112,3 +112,42 @@ Repeated physical USB unplug/replug tests, individually named physical controls,
 annotated stick-side failures with known throttle activity, repeated signature
 comparison and replacement-cable comparison remain pending. No game, virtual
 driver or anti-cheat tests were performed.
+
+## MFD controls, filtering and photo corrections — 2026-09-21
+
+Canonical Debug/x64 and Release/x64 solution builds passed with /W4 /WX. Both core
+suites passed, including filter jitter, movement, endpoint, bypass, reconnect,
+report-rate independence and failsafe precedence tests. Debug --mfd read the
+connected device successfully; Debug/Release --profiles passed for both real BF
+settings files. Release --mfd-roundtrip changed and restored all seven supported
+settings with exact driver readbacks. Final state: clutch=1, latch=0, MFD=100,
+LED=100, three 12-hour flags=0. An initial incorrectly packed LED request was
+rejected; after tracing the caller and fixing WORD order, the full test passed.
+No visual hardware change or persistence through power cycles is claimed.
+
+Release --hardware passed ten software reopens, assignment/clear and capture
+checks: 360 reports, 15 bytes, 44 controls, no reported error. This used an isolated
+probe directory and did not change the user's learned mappings. The original
+Debug output was rebuilt after the user stopped debugging, then started through
+the existing Visual Studio solution using its DTE Debugger.Go. No Computer Use
+was used. Physical MFD appearance and manual UI interaction remain user checks.
+
+## Settings layout follow-up — 2026-09-21
+
+Debug and Release /W4 /WX builds and core/profile tests passed after moving
+filtering to Live inputs, replacing LED percentage entry with a native trackbar,
+removing MFD percentage entry, and changing clock format editing to a selected
+clock plus 12/24-hour dropdown. Added I-button availability and PR0 export checks;
+pinkie remains reserved. Read-only MFD query showed the user's MFD=50/LED=10
+settings unchanged. No new device writes were used to test these layout changes.
+The updated Debug app was started through the existing Visual Studio solution.
+Manual slider/clock UI interaction remains to be observed by the user.
+
+## Live LED dragging — 2026-09-21
+
+Canonical Debug and Release builds and core tests passed. Updated Debug started
+through the existing Visual Studio solution. The settings transport/commands are
+unchanged from the previously verified driver roundtrip; this revision changes
+UI scheduling to a 33 ms, one-in-flight/latest-pending mechanism. No additional
+hardware setting writes were performed during this build verification. Physical
+brightness tracking during a real drag remains a user observation.

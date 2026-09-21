@@ -189,3 +189,82 @@ Profile-authoring checks passed in Release and in a separate Debug validation
 output directory. The normal Debug executable remained locked by the running
 debuggee; Visual Studio needs a stop/rebuild before F5 uses this final revision.
 Actual Logitech-editor loading and Battlefield gameplay remain unverified.
+
+## MFD settings and analogue noise filtering — 2026-09-21
+
+Added MFD & inputs to the existing Visual Studio application. Native checkboxes
+control clutch mode, latched clutch, MFD/LED on/off and each clock's 12-hour format;
+percentage fields control brightness. The independent settings worker uses only
+commands traced from the installed original-X52 CPL, checks 06A3:075C and driver
+8.0.116.0, validates returned lengths/ranges and reads back every change. Opening
+the tab only queries settings. Errors disable editing until refreshed. This does
+not replace the driver, program onboard memory or activate a PR0 profile.
+
+All seven settings passed a live change/read-back/restore/read-back test on the
+connected X52. Original settings restored: clutch enabled, latch off, both lights
+100%, all clocks 24-hour. These are driver readbacks; physical display appearance
+and restart persistence still require user observation. LED packing was corrected
+during validation (index WORD first, percentage WORD second); the driver rejected
+the initial incorrectly packed request without changing brightness.
+
+Four independently switchable filters target explicitly identified throttle.main,
+throttle.rotary_side, throttle.rotary_top and throttle.slider controls. Defaults
+are 45 ms exponential smoothing and one raw-count jitter tolerance. Settings persist
+in input-filters.json. Original raw/decoded evidence remains separate; the live
+Normalized column and safe internal state consume filtered values. Safety remains
+after the filter, so transport failure goes directly to the selected failsafe.
+There is still no independent game-output runtime; this does not smooth axes read
+directly by Battlefield. Buttons, hats and stick axes are untouched.
+
+Corrected the photo anchors from the user's physical labels: E is the top blue
+button, D the side blue button and I/clutch the lower rotary-centre button. No HID
+usage IDs or existing learned assignments were silently permuted.
+
+See docs/mfd-settings.md for driver-command provenance and supported limits.
+
+Final verification: Debug and Release rebuilt in the canonical out/x64 paths;
+core tests pass in both. Debug read-only MFD and BF3/BF4 import/export tests pass.
+All seven live driver setting roundtrips passed in Release. The updated Debug
+application was started via the already-open Visual Studio DTE for the existing
+SaitekX52Mapper.sln, with its existing startup project. No alternate executable
+was launched. The inspector connected and reached Running after initialization.
+
+## Settings UI correction — 2026-09-21
+
+Following physical feedback, MFD backlight is an on/off checkbox only. Intermediate
+values were accepted by the driver but the user observed no brightness change;
+previous roundtrip tests established driver readback, not visible LCD dimming.
+The working button LED brightness control is now a native 0..100% slider with a
+live value label; release commits and verifies the setting. The tab is MFD & LEDs.
+Three repetitive clock checkboxes were replaced by a clock selector and a single
+explicit 12-hour/24-hour format choice. Selecting a clock does not write settings.
+The UI explains that time zones remain configured through Logitech's panel.
+
+Noise filtering moved to Live inputs below the raw report display, with bottom
+anchoring on resize and extra height allocated to the live table. Clutch language
+now describes using I for Logitech profile selection and press-to-latch behaviour.
+I is available in PR0 authoring; exports using it explain that Logitech profile
+selection must be off. Pinkie stays reserved. No device settings are automatically
+changed by this correction.
+
+Verification for this correction: canonical Debug and Release builds passed,
+with core and BF3/BF4 profile tests in both, including I-button authoring/export.
+Read-only hardware check retained the user's settings (MFD driver value 50,
+LED 10%, clutch on, latch off, clocks 24-hour). No settings roundtrip writes were
+performed for the UI correction. Restarted Debug through the existing Visual
+Studio DTE and startup project after the user stopped the previous debuggee.
+
+## Live LED brightness slider — 2026-09-21
+
+LED brightness now responds to thumb tracking, clicks and keyboard adjustments,
+without waiting for release. A single pending value is overwritten by the newest
+position while one asynchronous driver write/readback is in flight. A 33 ms timer
+services completion and the final pending value. The active trackbar keeps mouse
+capture and its chosen position; older readbacks cannot move it backward. Other
+settings wait for the brightness update to settle, and failures clear the queue.
+The existing original-X52 identity/version checks and write verification remain.
+
+Verification: Debug and Release builds and core tests passed; restarted the updated
+Debug app through the existing Visual Studio solution. Live dragging appearance
+has not been visually verified in this turn; no device settings were changed by
+the build/test commands.

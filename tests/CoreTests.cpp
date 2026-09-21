@@ -224,6 +224,9 @@ int main(int argc, char** argv)
         }
         if (argc > 1 && std::string(argv[1]) == "--profiles") {
             const auto profile = x52::ReadX52Template(x52::InstalledX52TemplatePath());
+            const auto buttons = x52::ProfileButtons(profile);
+            Require(std::any_of(buttons.begin(), buttons.end(), [](const auto& button) { return button.id == "0x0009001E"; }), "I button available for authoring with clutch mode disabled");
+            Require(std::none_of(buttons.begin(), buttons.end(), [](const auto& button) { return button.id == "0x00090006"; }), "pinkie remains reserved for shifting");
             const auto directory = std::filesystem::current_path() / L"out" / L"profile-research";
             std::filesystem::create_directories(directory);
             for (const auto game : {3, 4}) {
@@ -236,6 +239,10 @@ int main(int argc, char** argv)
                 Require(x52::SerializePr0(x52::ParsePr0(text)) == text, "generated PR0 roundtrip");
                 Require(text.find("mouse-x") != std::string::npos && text.find("Scroll Down") != std::string::npos && text.find("device=keyboard") != std::string::npos,
                     "profile export preserves vendor mouse defaults while adding keyboard action");
+                const auto clutchDraft = x52::BuildBattlefieldPr0(profile, {{0, "0x0009001E", *fire}}, "I button draft");
+                const auto clutchText = x52::SerializePr0(clutchDraft);
+                Require(clutchText.find("button=0x0009001E") != std::string::npos &&
+                    x52::SerializePr0(x52::ParsePr0(clutchText)) == clutchText, "I button assignment exports and roundtrips");
                 const auto duplicate = std::vector<x52::ProfileMapping>{mapping[0], mapping[0]};
                 bool rejectedDuplicate = false;
                 try { (void)x52::BuildBattlefieldPr0(profile, duplicate, "Duplicate"); } catch (const std::exception&) { rejectedDuplicate = true; }

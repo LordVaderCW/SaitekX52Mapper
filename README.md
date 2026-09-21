@@ -47,9 +47,17 @@ selections persist separately from the games. The first version supports keyboar
 and left/right mouse commands on buttons; analogue axes stay in Battlefield and
 hats are not exported yet. See [profile workflow](docs/profile-authoring.md).
 
+The **MFD & LEDs** tab controls the installed original X52 driver's clutch,
+latched clutch, MFD backlight, button LEDs, brightness and three clock formats.
+Every change is read back; merely opening the tab does not change settings.
+The **Live inputs** tab saves per-axis noise filtering for the identified throttle lever, both
+rotaries and thumb slider. Raw captures stay intact; normalized and safe internal
+values receive jitter suppression plus smoothing. Defaults: 45 ms, one raw count.
+See [MFD settings and filtering](docs/mfd-settings.md).
+
 **No independent game-output runtime or virtual controller is implemented.**
 Logitech's installed software is responsible for activating exported profiles.
-No hooks, injection, game modifications, anti-cheat interference, HID writes or
+No hooks, injection, game modifications, anti-cheat interference, raw HID output/feature writes or
 driver installation. Software reopen is not an electrical joystick reset.
 
 See [PROJECT.md](PROJECT.md) for measured findings and remaining acceptance tests.

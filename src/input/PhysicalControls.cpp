@@ -40,13 +40,33 @@ const std::vector<PhysicalControl>& PhysicalControls()
         add("throttle.mouse_x", "Mouse mini-stick - horizontal", throttle, PhysicalKind::Mouse, "Small mouse controller on the throttle. May be exposed through a different collection/driver.");
         add("throttle.mouse_y", "Mouse mini-stick - vertical", throttle, PhysicalKind::Mouse, "Small mouse controller on the throttle. May be exposed through a different collection/driver.");
         add("throttle.mouse_button", "Mouse button", throttle, PhysicalKind::Button, "Mouse button near the throttle mouse controller. Availability in this joystick collection is unverified.");
-        add("throttle.scroll", "Throttle scroll wheel", throttle, PhysicalKind::Mouse, "Rear/index-finger scroll wheel. Its two directions and built-in press may be separate HID inputs.", {"Wheel up", "Wheel down", "Wheel press", "Whole wheel"});
+        add("throttle.scroll", "Throttle scroll wheel", throttle, PhysicalKind::Mouse, "Rear/index-finger scroll wheel: roll up/down, or press inward to click (right mouse button). Link only the HID input you observe responding.", {"Wheel up", "Wheel down", "Wheel press", "Whole wheel"});
         add("throttle.mfd_function", "MFD Function button", throttle, PhysicalKind::Button, "Function button below the display. May be handled locally rather than exposed in this HID collection.");
         add("throttle.mfd_start", "MFD Start / Stop button", throttle, PhysicalKind::Button, "Start/Stop below the display. Do not assume this produces a joystick report.");
         add("throttle.mfd_reset", "MFD Reset button", throttle, PhysicalKind::Button, "Reset below the display. This names a display button, not a hardware-recovery command.");
         return out;
     }();
     return catalog;
+}
+std::vector<PhysicalChoice> PhysicalChoices(InputGroup group, std::optional<PhysicalKind> kind)
+{
+    std::vector<PhysicalChoice> choices;
+    for (const auto& control : PhysicalControls()) {
+        if (group != InputGroup::Unknown && control.group != group) continue;
+        if (control.id == "throttle.scroll") {
+            if (kind && *kind != PhysicalKind::Button && *kind != PhysicalKind::Mouse) continue;
+            // Present individual button actions while retaining the saved catalog ID/parts.
+            // The same action in either filter must have the same duplicate-link identity.
+            choices.push_back({&control, "Scroll wheel up", "Wheel up"});
+            choices.push_back({&control, "Scroll wheel down", "Wheel down"});
+            choices.push_back({&control, "Scroll wheel click / right mouse button (RMB)", "Wheel press"});
+            if (!kind || *kind == PhysicalKind::Mouse)
+                choices.push_back({&control, "Scroll wheel - whole wheel value", "Whole wheel"});
+        } else if (!kind || control.kind == *kind) {
+            choices.push_back({&control, control.name, {}});
+        }
+    }
+    return choices;
 }
 const PhysicalControl* FindPhysicalControl(std::string_view id)
 {

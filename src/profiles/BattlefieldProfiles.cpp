@@ -202,9 +202,9 @@ std::vector<ProfileButton> ProfileButtons(const Pr0Node& profile)
 {
     ValidateX52(profile); std::vector<ProfileButton> buttons;
     for (const auto& control : Child(Controller(profile), "controls").children)
-        if (control.tag == "button" && control.value != "0x00090006" && control.value != "0x0009001E")
+        if (control.tag == "button" && control.value != "0x00090006")
             buttons.push_back({control.value, Unquote(control.attributes.at("name"))});
-    return buttons; // Pinkie and clutch remain reserved for the vendor's mode/profile selection.
+    return buttons; // Pinkie remains reserved for shift; I can be used with Logitech clutch mode disabled.
 }
 std::string EncodePr0(const Pr0Node& node)
 {

@@ -51,7 +51,7 @@ struct Picker {
     HWND window{};
     Control input;
     Snapshot snapshot;
-    std::vector<const PhysicalControl*> choices;
+    std::vector<PhysicalChoice> choices;
     std::array<std::unique_ptr<Photo>, 5> photos;
     ULONG_PTR gdiplus{};
     HFONT font{};
@@ -98,13 +98,19 @@ struct Picker {
                 throw std::runtime_error("Unable to populate control selector");
         SendMessageW(Item(item), CB_SETCURSEL, 0, 0);
     }
-    const PhysicalControl* Selected() const
+    const PhysicalChoice* SelectedChoice() const
     {
         const auto index = SendMessageW(Item(Physical), CB_GETCURSEL, 0, 0);
-        return index > 0 && static_cast<std::size_t>(index) <= choices.size() ? choices[static_cast<std::size_t>(index - 1)] : nullptr;
+        return index > 0 && static_cast<std::size_t>(index) <= choices.size() ? &choices[static_cast<std::size_t>(index - 1)] : nullptr;
+    }
+    const PhysicalControl* Selected() const
+    {
+        const auto* choice = SelectedChoice();
+        return choice ? choice->control : nullptr;
     }
     std::string SelectedPart() const
     {
+        if (const auto* choice = SelectedChoice(); choice && !choice->fixedPart.empty()) return choice->fixedPart;
         const auto* selected = Selected();
         const auto index = SendMessageW(Item(Part), CB_GETCURSEL, 0, 0);
         return selected && index > 0 && static_cast<std::size_t>(index) <= selected->parts.size() ? selected->parts[static_cast<std::size_t>(index - 1)] : "";
@@ -113,13 +119,11 @@ struct Picker {
     {
         const auto unit = SendMessageW(Item(Unit), CB_GETCURSEL, 0, 0);
         const auto kind = SendMessageW(Item(Kind), CB_GETCURSEL, 0, 0);
-        choices.clear();
+        choices = PhysicalChoices(static_cast<InputGroup>(unit), kind > 0 ?
+            std::optional{static_cast<PhysicalKind>(kind - 1)} : std::nullopt);
         std::vector<std::wstring> names{L"-- Select the physical control you operated --"};
-        for (const auto& entry : PhysicalControls()) {
-            if (unit && static_cast<int>(entry.group) != unit) continue;
-            if (kind && static_cast<int>(entry.kind) + 1 != kind) continue;
-            choices.push_back(&entry);
-            names.push_back((entry.group == InputGroup::Stick ? L"Stick: " : L"Throttle: ") + Wide(entry.name));
+        for (const auto& choice : choices) {
+            names.push_back((choice.control->group == InputGroup::Stick ? L"Stick: " : L"Throttle: ") + Wide(choice.name));
         }
         Combo(Physical, names);
         SelectionChanged();
@@ -128,10 +132,13 @@ struct Picker {
     {
         failure.clear();
         const auto* selected = Selected();
+        const auto* choice = SelectedChoice();
+        const bool fixed = choice && !choice->fixedPart.empty();
         std::vector<std::wstring> parts{selected && selected->parts.empty() ? L"Whole control" : L"-- Select direction / position --"};
-        if (selected) for (const auto& part : selected->parts) parts.push_back(Wide(part));
+        if (fixed) parts = {Wide(choice->fixedPart)};
+        else if (selected) for (const auto& part : selected->parts) parts.push_back(Wide(part));
         Combo(Part, parts);
-        EnableWindow(Item(Part), selected && !selected->parts.empty());
+        EnableWindow(Item(Part), selected && !fixed && !selected->parts.empty());
         if (selected) {
             const auto* annotation = FindControlPhoto(selected->id);
             SendMessageW(Item(PhotoView), CB_SETCURSEL, annotation ? annotation->preferred : selected->group == InputGroup::Stick ? 0 : 2, 0);
@@ -224,11 +231,13 @@ struct Picker {
         Filter();
         if (const auto found = snapshot.assignments.find(id); found != snapshot.assignments.end()) {
             Text(NeutralValue, std::to_wstring(found->second.neutral));
-            for (std::size_t i = 0; i < choices.size(); ++i) if (choices[i]->id == found->second.physicalId) {
+            for (std::size_t i = 0; i < choices.size(); ++i) if (choices[i].control->id == found->second.physicalId &&
+                (choices[i].fixedPart.empty() || choices[i].fixedPart == found->second.part)) {
                 SendMessageW(Item(Physical), CB_SETCURSEL, i + 1, 0); SelectionChanged();
-                const auto& parts = choices[i]->parts;
+                const auto& parts = choices[i].control->parts;
                 const auto part = std::find(parts.begin(), parts.end(), found->second.part);
-                if (part != parts.end()) SendMessageW(Item(Part), CB_SETCURSEL, static_cast<WPARAM>(part - parts.begin() + 1), 0);
+                if (choices[i].fixedPart.empty() && part != parts.end())
+                    SendMessageW(Item(Part), CB_SETCURSEL, static_cast<WPARAM>(part - parts.begin() + 1), 0);
                 break;
             }
         }
