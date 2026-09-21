@@ -1,0 +1,9 @@
+﻿  SaitekX52Mapper.cpp
+P:\OAI\Agent\SaitekX52Mapper\SaitekX52Mapper\framework.h(8,1): error C2220: the following warning is treated as an error
+  (compiling source file 'SaitekX52Mapper.cpp')
+  
+P:\OAI\Agent\SaitekX52Mapper\SaitekX52Mapper\framework.h(8,1): warning C4005: 'WIN32_LEAN_AND_MEAN': macro redefinition
+  (compiling source file 'SaitekX52Mapper.cpp')
+      P:\OAI\Agent\SaitekX52Mapper\SaitekX52Mapper\framework.h(8,1):
+      'WIN32_LEAN_AND_MEAN' previously declared on the command line
+  

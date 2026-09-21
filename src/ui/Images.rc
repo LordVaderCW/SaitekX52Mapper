@@ -1,0 +1,6 @@
+#include <windows.h>
+201 RCDATA "assets/x52-gallery-3.png"
+202 RCDATA "assets/x52-gallery-2.png"
+203 RCDATA "assets/x52-feature-1.png"
+204 RCDATA "assets/x52-gallery-1.png"
+205 RCDATA "assets/x52-gallery-5.png"
