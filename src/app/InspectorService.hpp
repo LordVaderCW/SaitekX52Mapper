@@ -13,6 +13,7 @@ struct Snapshot {
     std::string status{"Starting inspector"}, error, utc, lastExport;
     X52State physical, filtered, safe;
     AxisFilterSettings filters;
+    bool filtersReady{};
     Assignments assignments;
     std::vector<std::uint8_t> raw, previous;
     std::vector<BitChange> changes;

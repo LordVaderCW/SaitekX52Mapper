@@ -41,6 +41,22 @@ void Tests()
     links.at("axis").physicalId = "stick.x";
     noisy.controls.at("axis").normalized = -1;
     Require(filter.Process(noisy, links, filterSettings, 0, 2030).controls.at("axis").normalized == -1, "stick axes never filtered");
+    links.at("axis").physicalId = "throttle.main";
+    const auto atRate = [&](double period) {
+        AxisFilter timed; AxisFilterSettings settings; auto source = noisy;
+        source.controls.at("axis").normalized = 0;
+        (void)timed.Process(source, links, settings, 0, 0);
+        source.controls.at("axis").normalized = 0.8;
+        X52State output;
+        for (double t = period; t <= 100; t += period) output = timed.Process(source, links, settings, 0, t);
+        return output.controls.at("axis").normalized;
+    };
+    Require(std::abs(atRate(5) - atRate(20)) < 1e-10, "filter response independent of report frequency");
+    X52RecoveryManager filterSafety; filterSafety.settings.validationReports = 2; filterSafety.settings.blendMs = 0;
+    (void)filterSafety.Process(moving, links, 0, true, 0);
+    (void)filterSafety.Process(moving, links, 0, true, 1);
+    filterSafety.TransportLost(2, false);
+    Require(filterSafety.SafeState(moving, links, 2).controls.at("axis").normalized == -1, "failsafe bypasses filter delay immediately");
     bool invalidFilter = false;
     filterSettings.smoothingMs = -1;
     try { filterSettings.Validate(); } catch (const std::exception&) { invalidFilter = true; }

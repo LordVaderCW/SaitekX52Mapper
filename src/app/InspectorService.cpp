@@ -177,6 +177,8 @@ void InspectorService::Run(std::stop_token stop)
             {"qpc_frequency", frequency}, {"inventory", Utf8(current.inventory)},
             {"metrics", MetricsJson(current)}, {"physical", StateJson(current.physical)},
             {"safe_internal", StateJson(current.safe)}, {"events_file", Utf8(journal_.path().wstring())},
+            {"filtered_normalized", StateJson(current.filtered)},
+            {"input_filters", {{"enabled", current.filters.enabled}, {"smoothing_ms", current.filters.smoothingMs}, {"jitter_counts", current.filters.jitterCounts}}},
             {"assignments", AssignmentsJson(current.assignments)},
             {"event_log_dropped", journal_.Dropped()},
             {"limitations", "User markers are observations, not a verified signature. HID validity is not proof of stick health. No virtual output."}};
@@ -207,6 +209,7 @@ void InspectorService::Run(std::stop_token stop)
                 loaded.Validate(); current.filters = loaded;
             }
         } catch (const std::exception& error) { current.error = error.what(); event("filters_rejected", {{"error", error.what()}}); }
+        current.filtersReady = true;
         while (!stop.stop_requested()) {
             std::deque<Command> commands;
             { std::lock_guard lock(mutex_); commands.swap(commands_); }
@@ -218,6 +221,7 @@ void InspectorService::Run(std::stop_token stop)
                         WriteJson(directory_ / L"input-filters.json", {{"schema", 1}, {"enabled", command.filters.enabled},
                             {"smoothing_ms", command.filters.smoothingMs}, {"jitter_counts", command.filters.jitterCounts}});
                         current.filters = command.filters; axisFilter.Reset();
+                        current.error.clear();
                         current.status = "Input smoothing saved; raw HID evidence is unchanged";
                         event("input_filters_changed", {{"smoothing_ms", current.filters.smoothingMs}, {"jitter_counts", current.filters.jitterCounts}, {"enabled", current.filters.enabled}});
                         break;

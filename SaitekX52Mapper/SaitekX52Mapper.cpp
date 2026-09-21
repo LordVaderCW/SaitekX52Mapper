@@ -286,11 +286,12 @@ struct Application {
     void Poll()
     {
         last = service.Read();
-        if (!filterUiLoaded && last.sequence > 0) {
+        if (!filterUiLoaded && last.filtersReady) {
             for (int i = 0; i < 4; ++i) Check(FilterThrottle + i, last.filters.enabled[static_cast<std::size_t>(i)]);
             SetText(Item(FilterTime), Number(last.filters.smoothingMs)); SetText(Item(FilterJitter), Number(last.filters.jitterCounts));
             filterUiLoaded = true;
         }
+        EnableWindow(Item(FilterApply), filterUiLoaded);
         PollMfd();
         SetText(status, (last.connected ? L"CONNECTED   |   " : L"NOT CONNECTED   |   ") + last.device +
             L"   |   Reports: " + std::to_wstring(last.sequence));
