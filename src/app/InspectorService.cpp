@@ -116,6 +116,7 @@ void InspectorService::Publish(const Snapshot& snapshot) { std::lock_guard lock(
 void InspectorService::Run(std::stop_token stop)
 {
     Snapshot current;
+    AxisFilter axisFilter;
     std::unique_ptr<ReadSession> session;
     std::deque<Json> preRoll;
     std::vector<Json> capture;
@@ -155,8 +156,9 @@ void InspectorService::Run(std::stop_token stop)
     const auto close = [&] {
         if (session) { event("device_closed", {{"path", Utf8(session->path)}}); session.reset(); }
         current.connected = false;
+        axisFilter.Reset();
         current.recovery.TransportLost(now(), false);
-        current.safe = current.recovery.SafeState(current.physical, current.assignments, now());
+        current.safe = current.recovery.SafeState(current.filtered, current.assignments, now());
     };
     const auto startCapture = [&](const std::string& label) {
         if (current.captureActive) return;
@@ -192,12 +194,33 @@ void InspectorService::Run(std::stop_token stop)
         event("application_start", {{"qpc_frequency", frequency}, {"scope", "Milestone 1 inspector"}});
         try { current.assignments = LoadAssignments(directory_ / L"learned-controls.json"); }
         catch (const std::exception& error) { current.error = error.what(); event("assignments_rejected", {{"error", error.what()}}); }
+        try {
+            const auto path = directory_ / L"input-filters.json";
+            if (std::filesystem::exists(path)) {
+                if (std::filesystem::file_size(path) > 4096) throw std::runtime_error("Input filter settings exceed 4 KiB");
+                std::ifstream file(path); const auto saved = Json::parse(file);
+                if (saved.at("schema") != 1) throw std::runtime_error("Unsupported input filter settings schema");
+                AxisFilterSettings loaded;
+                loaded.enabled = saved.at("enabled").get<std::array<bool, 4>>();
+                loaded.smoothingMs = saved.at("smoothing_ms").get<double>();
+                loaded.jitterCounts = saved.at("jitter_counts").get<double>();
+                loaded.Validate(); current.filters = loaded;
+            }
+        } catch (const std::exception& error) { current.error = error.what(); event("filters_rejected", {{"error", error.what()}}); }
         while (!stop.stop_requested()) {
             std::deque<Command> commands;
             { std::lock_guard lock(mutex_); commands.swap(commands_); }
             for (const auto& command : commands) {
                 try {
                     switch (command.type) {
+                    case CommandType::ConfigureFilters:
+                        command.filters.Validate();
+                        WriteJson(directory_ / L"input-filters.json", {{"schema", 1}, {"enabled", command.filters.enabled},
+                            {"smoothing_ms", command.filters.smoothingMs}, {"jitter_counts", command.filters.jitterCounts}});
+                        current.filters = command.filters; axisFilter.Reset();
+                        current.status = "Input smoothing saved; raw HID evidence is unchanged";
+                        event("input_filters_changed", {{"smoothing_ms", current.filters.smoothingMs}, {"jitter_counts", current.filters.jitterCounts}, {"enabled", current.filters.enabled}});
+                        break;
                     case CommandType::Rescan:
                         current.inventory = InventoryText(EnumerateHid(stop));
                         nextScan = 0; break;
@@ -304,6 +327,7 @@ void InspectorService::Run(std::stop_token stop)
                     if (targets.size() == 1) {
                         session = std::make_unique<ReadSession>(targets.front());
                         previous.clear(); baselineRaw.clear(); current.physical.controls.clear(); current.safe.controls.clear();
+                        current.filtered.controls.clear(); axisFilter.Reset();
                         current.raw.clear(); current.changes.clear(); current.learning = false; current.controlEvidence.clear();
                         current.device = targets.front().product + L"  |  PS28  |  06A3:075C";
                         current.connected = true;
@@ -344,7 +368,8 @@ void InspectorService::Run(std::stop_token stop)
                                     {"raw_after", control.raw}, {"previous_report", Hex(current.previous)}, {"report", Hex(current.raw)},
                                     {"changed_bits", DiffJson(current.changes)}};
                         }
-                        current.safe = current.recovery.Process(current.physical, current.assignments, reportId, valid, reportTime);
+                        if (valid) current.filtered = axisFilter.Process(current.physical, current.assignments, current.filters, reportId, reportTime);
+                        current.safe = current.recovery.Process(current.filtered, current.assignments, reportId, valid, reportTime);
                         current.processMs = 1000.0 * static_cast<double>(Qpc() - inputTick) / static_cast<double>(frequency);
                         if (!valid && decodeError != lastParseError) event("hid_parse_error", {{"error", decodeError}});
                         lastParseError = decodeError;
@@ -398,7 +423,7 @@ void InspectorService::Run(std::stop_token stop)
                 }
             } else std::this_thread::sleep_for(std::chrono::milliseconds(ReaderWaitMs));
             current.recovery.Tick(now());
-            current.safe = current.recovery.SafeState(current.physical, current.assignments, now());
+            current.safe = current.recovery.SafeState(current.filtered, current.assignments, now());
             if (lastRecovery != current.recovery.state) {
                 event("recovery_transition", {{"from", RecoveryName(lastRecovery)}, {"to", RecoveryName(current.recovery.state)}});
                 lastRecovery = current.recovery.state;

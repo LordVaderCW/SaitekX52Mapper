@@ -35,10 +35,10 @@ inline const ControlPhoto* FindControlPhoto(std::string_view id)
         {"throttle.rotary_top", {{{}, {}, {309, 45, 36}, {263, 220, 28}, {}}}, 2},
         {"throttle.rotary_side", {{{}, {}, {379, 150, 29}, {302, 281, 23}, {}}}, 2},
         {"throttle.slider", {{{}, {}, {322, 110, 25}, {270, 255, 21}, {}}}, 2},
-        // D/E are the buttons in the rotary centres; I is above the slider.
-        {"throttle.d", {{{}, {}, {307, 34, 18}, {263, 214, 16}, {}}}, 2},
-        {"throttle.e", {{{}, {}, {390, 153, 17}, {309, 282, 15}, {}}}, 2},
-        {"throttle.clutch", {{{}, {}, {355, 79, 19}, {289, 239, 17}, {}}}, 2},
+        // Printed labels confirmed by the user: D side blue, E top, I lower rotary centre.
+        {"throttle.d", {{{}, {}, {355, 79, 19}, {289, 239, 17}, {}}}, 2},
+        {"throttle.e", {{{}, {}, {307, 34, 18}, {263, 214, 16}, {}}}, 2},
+        {"throttle.clutch", {{{}, {}, {390, 153, 17}, {309, 282, 15}, {}}}, 2},
         // The index-finger controls are hidden behind the handle in these photos.
         {"throttle.hat", {{{}, {}, {248, 93, 30}, {228, 247, 26}, {}}}, 2, true},
         {"throttle.mouse_x", {{{}, {}, {359, 182, 17}, {291, 299, 15}, {}}}, 2},

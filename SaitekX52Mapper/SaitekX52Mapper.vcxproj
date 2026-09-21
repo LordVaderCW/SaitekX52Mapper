@@ -186,4 +186,9 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\device\MfdSettings.cpp" />
+    <ClInclude Include="..\src\device\MfdSettings.hpp" />
+    <ClInclude Include="..\src\input\AxisFilter.hpp" />
+  </ItemGroup>
 </Project>

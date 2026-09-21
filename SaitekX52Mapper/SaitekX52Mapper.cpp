@@ -9,6 +9,8 @@
 #include <iomanip>
 #include <array>
 #include <set>
+#include <future>
+#include "device/MfdSettings.hpp"
 
 namespace {
 using namespace x52;
@@ -17,7 +19,9 @@ enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, Capt
     CaptureStop, Dropout, Returned, Apply, ControlList, Tabs, Candidate, Name, Group, Neutral,
     Hold, Blend, Validation, Stale, CaptureLabel, IdentifySelected,
     ImportBF3, ImportBF4, ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice,
-    AddProfileMapping, RemoveProfileMapping, ExportPr0, ProfileMappingList, ProfileInfo };
+    AddProfileMapping, RemoveProfileMapping, ExportPr0, ProfileMappingList, ProfileInfo, MfdRefresh, MfdClutch, MfdLatched, MfdLight, LedLight,
+    Clock1Format, Clock2Format, Clock3Format, MfdLevel, LedLevel, MfdApplyLevels, MfdInfo,
+    FilterThrottle, FilterSide, FilterTop, FilterSlider, FilterTime, FilterJitter, FilterApply };
 struct Child { HWND handle{}; int page{-1}; int x{}, y{}, w{}, h{}; bool stretchX{}, stretchY{}; };
 std::wstring Text(HWND window)
 {
@@ -64,6 +68,53 @@ struct Application {
     std::vector<ProfileButton> profileButtons;
     std::vector<ProfileMapping> profileMappings;
     int page{}, dpi{96};
+    std::future<MfdSettings> mfdTask;
+    std::optional<MfdSettings> mfdSettings;
+    DWORD rememberedMfd{100}, rememberedLed{100};
+    bool filterUiLoaded{}, mfdTried{};
+    bool Checked(int id) const { return SendMessageW(Item(id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
+    void Check(int id, bool value) { SendMessageW(Item(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
+    void MfdEnabled(bool enabled)
+    {
+        for (const auto id : {MfdClutch, MfdLatched, MfdLight, LedLight, Clock1Format, Clock2Format, Clock3Format,
+            MfdLevel, LedLevel, MfdApplyLevels}) EnableWindow(Item(id), enabled);
+        EnableWindow(Item(MfdLatched), enabled && Checked(MfdClutch));
+    }
+    void StartMfd(std::optional<std::pair<MfdOption, DWORD>> change = {})
+    {
+        if (mfdTask.valid()) return;
+        mfdTried = true;
+        MfdEnabled(false); EnableWindow(Item(MfdRefresh), FALSE);
+        SetText(Item(MfdInfo), change ? L"Applying setting and reading it back from the driver..." : L"Reading settings from the X52 driver...");
+        mfdTask = std::async(std::launch::async, [change] {
+            std::vector<std::wstring> paths;
+            for (const auto& device : EnumerateHid()) if (device.isPs28()) paths.push_back(device.path);
+            if (paths.size() != 1) throw std::runtime_error("Connect exactly one original X52 to edit its settings");
+            return change ? SetMfdOption(paths.front(), change->first, change->second) : ReadMfdSettings(paths.front());
+        });
+    }
+    void PollMfd()
+    {
+        if (page == 5 && !mfdTried) StartMfd();
+        if (!mfdTask.valid() || mfdTask.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
+        try {
+            mfdSettings = mfdTask.get(); const auto& values = *mfdSettings;
+            Check(MfdClutch, values.clutch); Check(MfdLatched, values.latched);
+            Check(MfdLight, values.mfdBrightness != 0); Check(LedLight, values.ledBrightness != 0);
+            if (values.mfdBrightness) rememberedMfd = values.mfdBrightness;
+            if (values.ledBrightness) rememberedLed = values.ledBrightness;
+            SetText(Item(MfdLevel), std::to_wstring(values.mfdBrightness));
+            SetText(Item(LedLevel), std::to_wstring(values.ledBrightness));
+            for (int i = 0; i < 3; ++i) Check(Clock1Format + i, values.twelveHour[static_cast<std::size_t>(i)]);
+            MfdEnabled(true);
+            SetText(Item(MfdInfo), L"Settings read back from the Logitech driver. Changes apply immediately.\r\nTurn off clutch mode to make I available as a normal button; latching only changes clutch behaviour.");
+        } catch (const std::exception& error) {
+            mfdSettings.reset(); MfdEnabled(false);
+            SetText(Item(MfdInfo), L"Settings unavailable: " + Wide(error.what()) + L"\r\nRefresh to read the actual state before making another change.");
+        }
+        EnableWindow(Item(MfdRefresh), TRUE);
+    }
+
     ~Application()
     {
         service.Stop();
@@ -110,7 +161,7 @@ struct Application {
         Add(L"BUTTON", L"Identify selected input...", IdentifySelected, -1, 730, 129, 246, 32, WS_TABSTOP);
         tabs = Add(WC_TABCONTROLW, L"", Tabs, -1, 24, 177, 952, 30, WS_TABSTOP, true);
         int i = 0;
-        for (const auto label : {L"Live inputs", L"Learn controls", L"Connection health", L"HID inventory", L"Battlefield profiles"}) {
+        for (const auto label : {L"Live inputs", L"Learn controls", L"Connection health", L"HID inventory", L"Battlefield profiles", L"MFD & inputs"}) {
             TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<wchar_t*>(label);
             if (TabCtrl_InsertItem(tabs, i++, &item) == -1) throw std::runtime_error("Unable to create tab");
         }
@@ -178,6 +229,34 @@ struct Application {
         Add(L"BUTTON", L"Export .pr0 draft", ExportPr0, 4, 752, 576, 224, 30, WS_TABSTOP);
         Add(L"STATIC", L"Import a game, select a mode/button and an existing command. Hats/axis programming is not exported yet.\r\nUnassigned controls retain Logitech defaults; removing an override restores mode inheritance.", ProfileInfo, 4, 24, 619, 952, 63, 0, true);
         for (const auto item : {ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice, AddProfileMapping, RemoveProfileMapping, ExportPr0}) EnableWindow(Item(item), FALSE);
+        Add(L"STATIC", L"X52 device settings", 0, 5, 24, 220, 500, 24);
+        Add(L"BUTTON", L"Refresh from X52", MfdRefresh, 5, 752, 215, 224, 30, WS_TABSTOP);
+        Add(L"BUTTON", L"Enable clutch mode", MfdClutch, 5, 24, 255, 260, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"BUTTON", L"Latched clutch button", MfdLatched, 5, 310, 255, 280, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"BUTTON", L"MFD backlight on", MfdLight, 5, 24, 293, 235, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"EDIT", L"100", MfdLevel, 5, 270, 290, 60, 28, ES_NUMBER | WS_TABSTOP);
+        Add(L"STATIC", L"%", 0, 5, 338, 295, 25, 22);
+        Add(L"BUTTON", L"Button LEDs on", LedLight, 5, 395, 293, 200, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"EDIT", L"100", LedLevel, 5, 600, 290, 60, 28, ES_NUMBER | WS_TABSTOP);
+        Add(L"STATIC", L"%", 0, 5, 668, 295, 25, 22);
+        Add(L"BUTTON", L"Apply brightness", MfdApplyLevels, 5, 752, 290, 224, 30, WS_TABSTOP);
+        for (int clock = 0; clock < 3; ++clock) {
+            const auto label = L"Clock " + std::to_wstring(clock + 1) + L": 12-hour format";
+            Add(L"BUTTON", label.c_str(), Clock1Format + clock, 5, 24 + clock * 310, 332, 295, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        }
+        Add(L"STATIC", L"Open this tab to read the device settings.", MfdInfo, 5, 24, 375, 952, 62, 0, true);
+        Add(L"STATIC", L"Analogue noise filtering", 0, 5, 24, 454, 500, 25);
+        for (int axis = 0; axis < 4; ++axis) {
+            constexpr std::array labels{L"Throttle lever", L"Side rotary", L"Top rotary", L"Thumb slider"};
+            Add(L"BUTTON", labels[static_cast<std::size_t>(axis)], FilterThrottle + axis, 5, 24 + axis * 238, 492, 230, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        }
+        Add(L"STATIC", L"Smoothing (ms)", 0, 5, 24, 540, 145, 24);
+        Add(L"EDIT", L"45", FilterTime, 5, 173, 534, 70, 28, WS_TABSTOP);
+        Add(L"STATIC", L"Jitter tolerance (raw counts)", 0, 5, 270, 540, 225, 24);
+        Add(L"EDIT", L"1", FilterJitter, 5, 505, 534, 70, 28, WS_TABSTOP);
+        Add(L"BUTTON", L"Save input filtering", FilterApply, 5, 752, 534, 224, 30, WS_TABSTOP);
+        Add(L"STATIC", L"Filtering uses your identified physical axis links. Raw values and capture evidence stay unchanged.\r\nNormalized and safe internal inputs are smoothed; stick axes, hats and buttons stay responsive.\r\nHigher smoothing reduces jitter but adds delay. These settings affect this mapper; game output is not implemented yet.", 0, 5, 24, 593, 952, 87, 0, true);
+        MfdEnabled(false);
         footer = Add(L"STATIC", L"", 0, -1, 24, 694, 952, 40, 0, true);
         Fonts();
         DEV_BROADCAST_DEVICEINTERFACE_W filter{};
@@ -207,6 +286,12 @@ struct Application {
     void Poll()
     {
         last = service.Read();
+        if (!filterUiLoaded && last.sequence > 0) {
+            for (int i = 0; i < 4; ++i) Check(FilterThrottle + i, last.filters.enabled[static_cast<std::size_t>(i)]);
+            SetText(Item(FilterTime), Number(last.filters.smoothingMs)); SetText(Item(FilterJitter), Number(last.filters.jitterCounts));
+            filterUiLoaded = true;
+        }
+        PollMfd();
         SetText(status, (last.connected ? L"CONNECTED   |   " : L"NOT CONNECTED   |   ") + last.device +
             L"   |   Reports: " + std::to_wstring(last.sequence));
         SetText(footer, Wide(last.error.empty() ? last.status : "ERROR: " + last.error));
@@ -235,7 +320,9 @@ struct Application {
                     assignment->second.group == InputGroup::Stick ? L"Stick" : L"Throttle");
                 set(3, std::to_wstring(control.raw));
                 set(4, std::to_wstring(control.minimum) + L".." + std::to_wstring(control.maximum));
-                set(5, control.kind == ControlKind::Button ? (control.raw ? L"PRESSED" : L"released") : Number(control.normalized));
+                const auto filtered = last.filtered.controls.find(rows[i]);
+                set(5, control.kind == ControlKind::Button ? (control.raw ? L"PRESSED" : L"released") :
+                    Number(filtered == last.filtered.controls.end() ? control.normalized : filtered->second.normalized));
                 set(6, safe == last.safe.controls.end() ? L"unavailable" : Number(safe->second.normalized) + (safe->second.valid ? L"" : L" [withheld]"));
             }
             const auto differences = Differences(previousDisplayed, last.raw);
@@ -301,6 +388,36 @@ struct Application {
     void Command(int id)
     {
         switch (id) {
+        case MfdRefresh: StartMfd(); break;
+        case MfdClutch: StartMfd({{MfdOption::Clutch, Checked(id)}}); break;
+        case MfdLatched: StartMfd({{MfdOption::Latched, Checked(id)}}); break;
+        case MfdLight: StartMfd({{MfdOption::MfdBrightness, Checked(id) ? rememberedMfd : 0}}); break;
+        case LedLight: StartMfd({{MfdOption::LedBrightness, Checked(id) ? rememberedLed : 0}}); break;
+        case Clock1Format: case Clock2Format: case Clock3Format:
+            StartMfd({{static_cast<MfdOption>(static_cast<int>(MfdOption::Clock1) + id - Clock1Format), Checked(id)}}); break;
+        case MfdApplyLevels: {
+            const auto mfd = Numeric(Item(MfdLevel)), led = Numeric(Item(LedLevel));
+            if (mfd < 0 || mfd > 100 || led < 0 || led > 100 || std::floor(mfd) != mfd || std::floor(led) != led)
+                throw std::runtime_error("Brightness must be a whole percentage from 0 to 100");
+            if (mfdTask.valid() || !mfdSettings) break;
+            MfdEnabled(false); EnableWindow(Item(MfdRefresh), FALSE);
+            SetText(Item(MfdInfo), L"Applying brightness and reading it back...");
+            const auto previous = *mfdSettings;
+            mfdTask = std::async(std::launch::async, [mfd, led, previous] {
+                std::vector<std::wstring> paths;
+                for (const auto& device : EnumerateHid()) if (device.isPs28()) paths.push_back(device.path);
+                if (paths.size() != 1) throw std::runtime_error("Connect exactly one original X52");
+                if (mfd != previous.mfdBrightness) (void)SetMfdOption(paths.front(), MfdOption::MfdBrightness, static_cast<DWORD>(mfd));
+                if (led != previous.ledBrightness) (void)SetMfdOption(paths.front(), MfdOption::LedBrightness, static_cast<DWORD>(led));
+                return ReadMfdSettings(paths.front());
+            }); break;
+        }
+        case FilterApply: {
+            x52::Command command{CommandType::ConfigureFilters};
+            for (int i = 0; i < 4; ++i) command.filters.enabled[static_cast<std::size_t>(i)] = Checked(FilterThrottle + i);
+            command.filters.smoothingMs = Numeric(Item(FilterTime)); command.filters.jitterCounts = Numeric(Item(FilterJitter));
+            command.filters.Validate(); service.Send(std::move(command)); break;
+        }
         case Refresh: service.Send({CommandType::Rescan}); break;
         case Reinitialize: service.Send({CommandType::Reinitialize}); break;
         case Export: service.Send({CommandType::Export}); break;

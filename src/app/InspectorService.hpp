@@ -2,6 +2,7 @@
 #include "../diagnostics/Recovery.hpp"
 #include "../profiles/LearnedControls.hpp"
 #include "../device/HidEnumerator.hpp"
+#include "../input/AxisFilter.hpp"
 #include <deque>
 #include <functional>
 
@@ -10,7 +11,8 @@ struct Snapshot {
     bool connected{}, captureActive{}, learning{};
     std::wstring device, inventory;
     std::string status{"Starting inspector"}, error, utc, lastExport;
-    X52State physical, safe;
+    X52State physical, filtered, safe;
+    AxisFilterSettings filters;
     Assignments assignments;
     std::vector<std::uint8_t> raw, previous;
     std::vector<BitChange> changes;
@@ -25,7 +27,7 @@ struct Snapshot {
     std::uint64_t sequence{}, captureReports{}, throttleChangesDuringDropout{}, stickChangesDuringDropout{};
 };
 enum class CommandType { Rescan, Reinitialize, StartLearn, SaveLearn, StartCapture,
-    StopCapture, MarkDropout, MarkReturn, Export, Configure, DeviceEvent, AssignControl, ClearAssignment };
+    StopCapture, MarkDropout, MarkReturn, Export, Configure, DeviceEvent, AssignControl, ClearAssignment, ConfigureFilters };
 struct Command {
     CommandType type;
     std::string text, id;
@@ -33,6 +35,7 @@ struct Command {
     RecoverySettings settings;
     bool removed{};
     std::uint64_t request{};
+    AxisFilterSettings filters;
 };
 class InspectorService final {
 public:

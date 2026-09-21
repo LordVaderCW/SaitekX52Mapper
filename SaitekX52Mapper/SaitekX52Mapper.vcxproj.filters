@@ -143,4 +143,9 @@
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="..\src\device\MfdSettings.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="..\src\device\MfdSettings.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\input\AxisFilter.hpp"><Filter>Header Files</Filter></ClInclude>
+  </ItemGroup>
 </Project>

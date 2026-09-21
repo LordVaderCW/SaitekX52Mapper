@@ -4,6 +4,8 @@
 #include "input/PhysicalControls.hpp"
 #include "profiles/BattlefieldProfiles.hpp"
 #include <set>
+#include "device/MfdSettings.hpp"
+#include "ui/ControlPhoto.hpp"
 #include <iostream>
 #include <stdexcept>
 
@@ -13,6 +15,38 @@ void Tests()
 {
     using namespace x52;
     Require(Normalize(0, 0, 100) == -1 && Normalize(50, 0, 100) == 0 && Normalize(100, 0, 100) == 1, "normalization endpoints");
+    AxisFilter filter; AxisFilterSettings filterSettings;
+    X52State noisy;
+    noisy.controls["axis"] = {"axis", ControlKind::Axis, 128, 0, 255, Normalize(128, 0, 255), true, 0};
+    noisy.controls["button"] = {"button", ControlKind::Button, 1, 0, 1, 1, true, 0};
+    Assignments links{{"axis", {"Throttle", InputGroup::Throttle, -1, "throttle.main"}}};
+    const auto initial = filter.Process(noisy, links, filterSettings, 0, 0);
+    for (int i = 1; i <= 100; ++i) {
+        noisy.controls.at("axis").raw = 128 + (i % 2);
+        noisy.controls.at("axis").normalized = Normalize(noisy.controls.at("axis").raw, 0, 255);
+        const auto quiet = filter.Process(noisy, links, filterSettings, 0, i * 10.0);
+        Require(std::abs(quiet.controls.at("axis").normalized - initial.controls.at("axis").normalized) < 1e-10, "one-count throttle jitter held stable");
+        Require(quiet.controls.at("axis").raw == noisy.controls.at("axis").raw && quiet.controls.at("button").normalized == 1, "raw values and buttons untouched");
+    }
+    noisy.controls.at("axis").raw = 255; noisy.controls.at("axis").normalized = 1;
+    const auto moving = filter.Process(noisy, links, filterSettings, 0, 1010);
+    Require(moving.controls.at("axis").normalized > initial.controls.at("axis").normalized && moving.controls.at("axis").normalized < 1, "deliberate movement smoothed");
+    X52State settled;
+    for (int i = 2; i <= 100; ++i) settled = filter.Process(noisy, links, filterSettings, 0, 1000 + i * 10.0);
+    Require(settled.controls.at("axis").normalized == 1, "full travel endpoint reached");
+    filterSettings.enabled[0] = false;
+    Require(filter.Process(noisy, links, filterSettings, 0, 2010).controls.at("axis").normalized == 1, "disabled filter bypasses immediately");
+    filterSettings.enabled[0] = true; filter.Reset();
+    Require(filter.Process(noisy, links, filterSettings, 0, 2020).controls.at("axis").normalized == 1, "reconnect initializes at current position");
+    links.at("axis").physicalId = "stick.x";
+    noisy.controls.at("axis").normalized = -1;
+    Require(filter.Process(noisy, links, filterSettings, 0, 2030).controls.at("axis").normalized == -1, "stick axes never filtered");
+    bool invalidFilter = false;
+    filterSettings.smoothingMs = -1;
+    try { filterSettings.Validate(); } catch (const std::exception&) { invalidFilter = true; }
+    Require(invalidFilter, "invalid filter configuration rejected");
+    Require(FindControlPhoto("throttle.e")->spots[2].y < FindControlPhoto("throttle.d")->spots[2].y &&
+        FindControlPhoto("throttle.d")->spots[2].y < FindControlPhoto("throttle.clutch")->spots[2].y, "user-confirmed E/D/I physical positions");
     Require(SignExtend(255, 8, true) == -1 && SignExtend(255, 8, false) == 255 && SignExtend(0x80000000, 32, true) == -2147483648LL, "signed HID values");
     const std::vector<std::uint8_t> before{0, 0x10}, after{0, 0x21};
     const auto changes = Differences(before, after);
@@ -152,6 +186,26 @@ int main(int argc, char** argv)
 {
     try {
         Tests();
+        if (argc > 1 && (std::string(argv[1]) == "--mfd" || std::string(argv[1]) == "--mfd-roundtrip")) {
+            std::vector<std::wstring> paths;
+            for (const auto& device : x52::EnumerateHid()) if (device.isPs28()) paths.push_back(device.path);
+            Require(paths.size() == 1, "exactly one original X52 connected");
+            const auto before = x52::ReadMfdSettings(paths.front());
+            std::cout << "MFD live: clutch=" << before.clutch << " latched=" << before.latched << " MFD=" << before.mfdBrightness
+                << " LED=" << before.ledBrightness << " clocks=" << before.twelveHour[0] << before.twelveHour[1] << before.twelveHour[2] << '\n';
+            if (std::string(argv[1]) == "--mfd-roundtrip") {
+                const std::array<DWORD, 7> values{before.clutch, before.latched, before.mfdBrightness, before.ledBrightness,
+                    before.twelveHour[0], before.twelveHour[1], before.twelveHour[2]};
+                for (std::size_t i = 0; i < values.size(); ++i) {
+                    const auto option = static_cast<x52::MfdOption>(i);
+                    const auto changed = (i == 2 || i == 3) ? (values[i] == 100 ? 99u : values[i] + 1) : (values[i] ? 0u : 1u);
+                    try { (void)x52::SetMfdOption(paths.front(), option, changed); }
+                    catch (...) { (void)x52::SetMfdOption(paths.front(), option, values[i]); throw; }
+                    (void)x52::SetMfdOption(paths.front(), option, values[i]);
+                    std::cout << "Setting " << i << " changed, read back, restored and read back\n";
+                }
+            }
+        }
         if (argc > 1 && std::string(argv[1]) == "--profiles") {
             const auto profile = x52::ReadX52Template(x52::InstalledX52TemplatePath());
             const auto directory = std::filesystem::current_path() / L"out" / L"profile-research";
