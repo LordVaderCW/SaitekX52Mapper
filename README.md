@@ -34,23 +34,29 @@ axes and switches. Links persist and can be corrected or cleared. Use **Learn
 controls** to collect an isolated movement first, then **Identify candidate**.
 See [control identification](docs/control-identification.md).
 Use **Connection health** to capture a fault and mark its start/return.
-**Stop / save capture** exports JSON in `%LOCALAPPDATA%/X52BattlefieldMapper`.
+**Stop / save capture** exports JSON in the `data` folder beside `SaitekX52Mapper.exe`.
+Learned controls, input filtering settings and event logs also live there. **Open
+data folder** opens this folder. Storage follows the executable, regardless of
+the working directory; Debug and Release builds each have their own `data` folder.
+Keep the executable in a writable folder. If storage is unavailable, the app
+reports an error instead of falling back to AppData. Move the `data` folder with
+the executable to preserve settings and captures.
 The same folder stores event JSONL and `learned-controls.json`. Capture includes
 up to 200 pre-roll records and stops at about 64 MiB of serialized report data.
 Normal operation does not write unchanged reports to disk. See
 [the capture procedure](docs/x52-dropout-analysis.md) and [troubleshooting](docs/troubleshooting.md).
 
-The **Battlefield profiles** tab imports your BF3/BF4 settings from Documents.
+The **Battlefield profiles** page imports your BF3/BF4 settings from Documents.
 Choose a mode, physical button and existing command, then Assign / replace.
 Export .pr0 draft writes a new profile for review in Logitech's profiler. Authoring
 selections persist separately from the games. The first version supports keyboard
 and left/right mouse commands on buttons; analogue axes stay in Battlefield and
 hats are not exported yet. See [profile workflow](docs/profile-authoring.md).
 
-The **MFD & LEDs** tab controls the installed original X52 driver's clutch,
+The **MFD & LEDs** page controls the installed original X52 driver's clutch,
 latched clutch, MFD backlight, button LEDs, brightness and three clock formats.
-Every change is read back; merely opening the tab does not change settings.
-The **Live inputs** tab saves per-axis noise filtering for the identified throttle lever, both
+Every change is read back; merely opening the page does not change settings.
+The **Live inputs** page saves per-axis noise filtering for the identified throttle lever, both
 rotaries and thumb slider. Raw captures stay intact; normalized and safe internal
 values receive jitter suppression plus smoothing. Defaults: 45 ms, one raw count.
 See [MFD settings and filtering](docs/mfd-settings.md).

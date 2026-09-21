@@ -2,6 +2,34 @@
 
 ## Current status
 
+All 44 current HID inputs have now been linked by the user: 24 Stick and 20
+Throttle. The reported failure holds the last stick angle (drift lock) and makes
+stick buttons unresponsive while the throttle can remain responsive.
+
+The user's current instruction is **log only** for stick/throttle comparisons.
+The monitor records `stick_unchanged_throttle_active` when fresh stick raw values
+have not changed for at least 250 ms and at least two reports show throttle
+activity, with another throttle change at the time of logging. Throttle button/
+hat transitions count directly; an axis must move at least three raw counts or
+2% of its logical range, whichever is larger, from its observation anchor.
+Any stick raw change ends the observation. Invalid reports, stale transport,
+session closure, or changed links interrupt it. Each episode logs one start and
+one end with raw state, mapping snapshot and timing. These events are written to
+the session event log even when a full capture is not armed.
+
+This is an activity observation, **not a verified dropout signature**. Holding the
+stick still intentionally can produce the same log. Brief faults below 250 ms,
+faults without throttle activity, or partial freezes with other stick controls
+still changing can be missed. No automatic suspension, neutralisation, reopen,
+or recovery is triggered by these observations. Existing manual recovery and
+transport-failure handling are separate.
+
+Connection health shows grouped raw-axis and button/hat transition counts and
+last-change ages. Full captures retain up to ten seconds of pre-roll, capped at
+16 MiB of encoded records and 4096 entries. Exports summarize every control's
+raw range, transition count and longest unchanged run, plus report gaps/errors.
+Neither analogue noise nor an unchanged value alone proves responsiveness.
+
 2026-09-21 update: Logitech driver 8.0.116.0 and profiler 8.0.213.0 are installed.
 The user reports working LCD lighting, brighter LEDs and throttle mouse/scroll
 controls. Apparent improvement was followed by a very brief ("microscopic")
@@ -28,7 +56,7 @@ and movement ranges. No stick/throttle ownership was assigned during that captur
 1. Learn the main stick axes, a stick button and at least one throttle control;
    assign each control to its observed Stick or Throttle group.
 2. In Connection health, enter cable length and conditions in the capture label.
-3. Start disconnect capture while controls work. The preceding 200 records are kept.
+3. Start disconnect capture while controls work. Up to ten seconds of preceding records are kept.
    In the revised build, Mark stick dropout also starts a capture from pre-roll if
    none is active, so an unexpected fault can be marked without arming beforehand.
 4. Operate a learned throttle control while reproducing the already known fault.

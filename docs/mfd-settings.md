@@ -68,7 +68,7 @@ and [SetupDiGetDevicePropertyW](https://learn.microsoft.com/en-us/windows/win32/
 
 Use the four checkboxes to enable filtering per named throttle axis. Save input
 filtering persists the choices, smoothing time (0..250 ms) and jitter tolerance
-(0..5 raw counts) in %LOCALAPPDATA%/X52BattlefieldMapper/input-filters.json.
+(0..5 raw counts) in `data/input-filters.json` beside the application executable.
 Filtering requires the corresponding physical axis link from the identification
 picker; unknown axes are not guessed from usage numbers.
 

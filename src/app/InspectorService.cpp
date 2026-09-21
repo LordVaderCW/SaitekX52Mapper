@@ -4,7 +4,6 @@
 #include "../util/Text.hpp"
 #include "../diagnostics/CaptureAnalysis.hpp"
 #include "../input/PhysicalControls.hpp"
-#include <shlobj.h>
 #include <memory>
 #include <set>
 #include <future>
@@ -14,7 +13,6 @@ namespace x52 {
 namespace {
 constexpr DWORD ReaderWaitMs = 20;
 constexpr double RediscoverMs = 1000;
-constexpr std::size_t PreRollReports = 200;
 constexpr std::size_t CaptureLimitBytes = 64 * 1024 * 1024;
 HANDLE OpenInput(const std::wstring& path)
 {
@@ -83,18 +81,22 @@ Json MetricsJson(const Snapshot& snapshot)
         {"confirmed_protocol_dropouts", metrics.confirmedDropouts}, {"recoveries", metrics.successfulRecoveries},
         {"throttle_changes_during_marked_dropout", snapshot.throttleChangesDuringDropout},
         {"stick_changes_during_marked_dropout", snapshot.stickChangesDuringDropout},
+        {"stick_unchanged_throttle_active_observations", snapshot.activityObservations},
+        {"activity_observation_active", snapshot.activityObservationActive},
         {"classification", "UNKNOWN: no verified PS28 stick-side signature"},
         {"recovery_state", RecoveryName(snapshot.recovery.state)}};
 }
 }
 std::filesystem::path DefaultDataDirectory()
 {
-    PWSTR raw{};
-    const auto result = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &raw);
-    if (FAILED(result)) throw std::runtime_error("SHGetKnownFolderPath(LocalAppData) failed");
-    const auto free = [](wchar_t* value) { CoTaskMemFree(value); };
-    std::unique_ptr<wchar_t, decltype(free)> owner(raw, free);
-    return std::filesystem::path(owner.get()) / L"X52BattlefieldMapper";
+    // Resolve from the executable, never the launcher's working directory.
+    // No AppData fallback: a portable installation must remain self-contained.
+    std::wstring executable(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    if (!length) throw WindowsException("Locate executable for application data", GetLastError());
+    if (length >= executable.size()) throw WindowsException("Executable path exceeds supported length", ERROR_INSUFFICIENT_BUFFER);
+    executable.resize(length);
+    return std::filesystem::path(executable).parent_path() / L"data";
 }
 InspectorService::InspectorService(std::filesystem::path directory)
     : directory_(std::move(directory)), journal_(directory_) {}
@@ -117,8 +119,8 @@ void InspectorService::Run(std::stop_token stop)
 {
     Snapshot current;
     AxisFilter axisFilter;
+    GroupActivityMonitor activity;
     std::unique_ptr<ReadSession> session;
-    std::deque<Json> preRoll;
     std::vector<Json> capture;
     std::future<std::filesystem::path> exportTask;
     std::map<std::string, Json> candidateEvidence;
@@ -129,6 +131,7 @@ void InspectorService::Run(std::stop_token stop)
     std::set<std::string> candidates;
     auto lastRecovery = current.recovery.state;
     const auto frequency = QpcFrequency();
+    ReportHistory preRoll(10 * frequency);
     const auto now = [frequency] { return 1000.0 * static_cast<double>(Qpc()) / static_cast<double>(frequency); };
     auto nextScan = 0.0;
     auto nextPublish = 0.0;
@@ -136,8 +139,7 @@ void InspectorService::Run(std::stop_token stop)
     const auto record = [&](Json entry) {
         if (!entry.contains("qpc")) entry["qpc"] = Qpc();
         if (!entry.contains("utc")) entry["utc"] = UtcNow();
-        preRoll.push_back(entry);
-        if (preRoll.size() > PreRollReports) preRoll.pop_front();
+        preRoll.Push(entry);
         if (current.captureActive) {
             captureBytes += entry.dump().size();
             capture.push_back(std::move(entry));
@@ -153,21 +155,35 @@ void InspectorService::Run(std::stop_token stop)
         data["event"] = type;
         record(std::move(data));
     };
+    const auto logActivity = [&](const std::optional<ActivityObservation>& observation) {
+        current.activityObservationActive = activity.observationActive;
+        if (!observation) return;
+        if (observation->started) ++current.activityObservations;
+        event(observation->started ? "stick_unchanged_throttle_active" : "stick_activity_observation_ended",
+            {{"reason", observation->reason}, {"stick_unchanged_ms", observation->observedAtMs - observation->unchangedSinceMs},
+            {"unchanged_since_qpc", static_cast<std::int64_t>(observation->unchangedSinceMs * static_cast<double>(frequency) / 1000.0)},
+            {"log_only", true}, {"confirmed_dropout", false}, {"raw", Hex(current.raw)},
+            {"decoded", StateJson(current.physical)}, {"assignments", AssignmentsJson(current.assignments)}});
+    };
     const auto close = [&] {
+        logActivity(activity.End(now(), "Input session closed; observation interrupted"));
         if (session) { event("device_closed", {{"path", Utf8(session->path)}}); session.reset(); }
         current.connected = false;
         axisFilter.Reset();
+        activity.Reset(); current.activity = activity.groups;
         current.recovery.TransportLost(now(), false);
         current.safe = current.recovery.SafeState(current.filtered, current.assignments, now());
     };
     const auto startCapture = [&](const std::string& label) {
         if (current.captureActive) return;
         if (!capture.empty()) throw std::runtime_error("Save the existing capture before starting another");
-        capture.assign(preRoll.begin(), preRoll.end()); captureBytes = 0;
+        preRoll.Trim(Qpc());
+        capture.assign(preRoll.Records().begin(), preRoll.Records().end()); captureBytes = 0;
         for (const auto& entry : capture) captureBytes += entry.dump().size();
         current.captureActive = true; current.captureReports = 0;
         current.throttleChangesDuringDropout = 0; current.stickChangesDuringDropout = 0;
-        event("capture_started", {{"label", label}, {"preroll_records", preRoll.size()}});
+        event("capture_started", {{"label", label}, {"preroll_records", preRoll.Records().size()},
+            {"preroll_target_ms", 10000}, {"assignments", AssignmentsJson(current.assignments)}});
         current.status = "Capturing every report. Mark dropout and return when physically observed.";
     };
     const auto exportReport = [&] {
@@ -254,6 +270,8 @@ void InspectorService::Run(std::stop_token stop)
                         if (!current.learning || !candidates.contains(command.id)) throw std::runtime_error("Select a changed control from this Learn session");
                         SaveAssignment(directory_ / L"learned-controls.json", command.id, command.learned, candidateEvidence.at(command.id));
                         current.assignments = LoadAssignments(directory_ / L"learned-controls.json");
+                        logActivity(activity.End(now(), "Control links changed"));
+                        activity.Reset(); current.activity = activity.groups;
                         current.learning = false; current.status = "Saved observed assignment; repeat testing before treating it as verified";
                         event("control_assigned", {{"id", command.id}, {"name", command.learned.name}}); break;
                     case CommandType::AssignControl:
@@ -276,6 +294,8 @@ void InspectorService::Run(std::stop_token stop)
                         if (current.controlEvidence.contains(command.id)) selectedEvidence["last_hid_transition"] = current.controlEvidence.at(command.id);
                         SaveAssignment(directory_ / L"learned-controls.json", command.id, learned, selectedEvidence);
                         current.assignments = LoadAssignments(directory_ / L"learned-controls.json");
+                        logActivity(activity.End(now(), "Control links changed"));
+                        activity.Reset(); current.activity = activity.groups;
                         current.assignmentRequest = command.request; current.assignmentError.clear(); current.error.clear();
                         current.status = "Linked " + command.id + " to " + learned.name;
                         event("control_assigned", {{"id", command.id}, {"name", learned.name}, {"status", learned.status}, {"physical_id", learned.physicalId}, {"part", learned.part}});
@@ -284,6 +304,8 @@ void InspectorService::Run(std::stop_token stop)
                     case CommandType::ClearAssignment:
                         RemoveAssignment(directory_ / L"learned-controls.json", command.id);
                         current.assignments = LoadAssignments(directory_ / L"learned-controls.json");
+                        logActivity(activity.End(now(), "Control links changed"));
+                        activity.Reset(); current.activity = activity.groups;
                         current.assignmentRequest = command.request; current.assignmentError.clear(); current.error.clear();
                         current.status = "Cleared link for " + command.id;
                         event("control_assignment_cleared", {{"id", command.id}}); break;
@@ -372,6 +394,8 @@ void InspectorService::Run(std::stop_token stop)
                                     {"raw_after", control.raw}, {"previous_report", Hex(current.previous)}, {"report", Hex(current.raw)},
                                     {"changed_bits", DiffJson(current.changes)}};
                         }
+                        const auto activityObservation = activity.Observe(current.physical, current.assignments, reportId, valid, reportTime);
+                        current.activity = activity.groups;
                         if (valid) current.filtered = axisFilter.Process(current.physical, current.assignments, current.filters, reportId, reportTime);
                         current.safe = current.recovery.Process(current.filtered, current.assignments, reportId, valid, reportTime);
                         current.processMs = 1000.0 * static_cast<double>(Qpc() - inputTick) / static_cast<double>(frequency);
@@ -417,6 +441,7 @@ void InspectorService::Run(std::stop_token stop)
                             {"decoded", StateJson(current.physical)}, {"valid", valid}, {"parse_error", decodeError},
                             {"recovery", RecoveryName(current.recovery.state)}};
                         record(std::move(entry));
+                        logActivity(activityObservation);
                         if (current.captureActive) ++current.captureReports;
                     }
                 } catch (const std::system_error& error) {
@@ -426,7 +451,10 @@ void InspectorService::Run(std::stop_token stop)
                     close(); current.recovery.Reopening(); nextScan = now() + RediscoverMs;
                 }
             } else std::this_thread::sleep_for(std::chrono::milliseconds(ReaderWaitMs));
+            const bool reportsWereAvailable = current.recovery.transportAvailable;
             current.recovery.Tick(now());
+            if (reportsWereAvailable && !current.recovery.transportAvailable)
+                logActivity(activity.Interrupt(now(), "Reports stale; observation interrupted"));
             current.safe = current.recovery.SafeState(current.filtered, current.assignments, now());
             if (lastRecovery != current.recovery.state) {
                 event("recovery_transition", {{"from", RecoveryName(lastRecovery)}, {"to", RecoveryName(current.recovery.state)}});

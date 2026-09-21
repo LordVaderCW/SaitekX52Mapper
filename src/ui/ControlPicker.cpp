@@ -1,5 +1,6 @@
 #include "ControlPicker.hpp"
 #include "ControlPhoto.hpp"
+#include "BattlefieldTheme.hpp"
 #include "../input/PhysicalControls.hpp"
 #include "../util/Text.hpp"
 #include <objidl.h>
@@ -45,6 +46,7 @@ std::wstring ReadText(HWND window)
     return text;
 }
 struct Picker {
+    BattlefieldTheme theme;
     InspectorService& service;
     std::string id;
     HINSTANCE instance{};
@@ -83,11 +85,14 @@ struct Picker {
     }
     HWND Add(const wchar_t* cls, const wchar_t* value, int item, int x, int y, int width, int height, DWORD style = 0)
     {
-        const auto child = CreateWindowExW(std::wstring_view(cls) == L"EDIT" ? WS_EX_CLIENTEDGE : 0,
+        if (std::wstring_view(cls) == L"COMBOBOX") style |= CBS_OWNERDRAWFIXED | CBS_HASSTRINGS;
+        if (std::wstring_view(cls) == L"STATIC" && !(style & SS_OWNERDRAW)) style |= SS_NOPREFIX;
+        const auto child = CreateWindowExW(0,
             cls, value, WS_CHILD | WS_VISIBLE | style, Px(x), Px(y), Px(width), Px(height), window,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(item)), instance, nullptr);
         if (!child) throw WindowsException("CreateWindowExW (control picker)", GetLastError());
         SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        theme.Style(child);
         return child;
     }
     void Combo(int item, const std::vector<std::wstring>& values)
@@ -190,7 +195,7 @@ struct Picker {
             (monitor.rcWork.right - monitor.rcWork.left - 48) / 980.0,
             (monitor.rcWork.bottom - monitor.rcWork.top - 60) / 740.0});
         font = CreateFontW(-Px(15), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Bahnschrift");
         if (!font) throw WindowsException("CreateFontW", GetLastError());
         SetWindowTextW(window, L"Identify physical X52 control");
         RECT bounds{0, 0, Px(960), Px(680)};
@@ -200,7 +205,8 @@ struct Picker {
         if (!SetWindowPos(window, nullptr, monitor.rcWork.left + (monitor.rcWork.right - monitor.rcWork.left - width) / 2,
             monitor.rcWork.top + (monitor.rcWork.bottom - monitor.rcWork.top - height) / 2, width, height, SWP_NOZORDER))
             throw WindowsException("SetWindowPos", GetLastError());
-        Add(L"STATIC", L"Which physical control produces this HID input?", 0, 24, 18, 900, 30);
+        theme.Attach(window);
+        Add(L"STATIC", L"X52 / IDENTIFY PHYSICAL CONTROL", 0, 24, 18, 900, 30);
         Add(L"STATIC", (Wide(id) + L"   |   " + KindName(input.kind) + L"   |   logical range " + std::to_wstring(input.minimum) + L".." + std::to_wstring(input.maximum)).c_str(), 0, 24, 56, 900, 26);
         Add(L"COMBOBOX", L"", PhotoView, 24, 96, 382, 200, CBS_DROPDOWNLIST | WS_TABSTOP);
         Combo(PhotoView, {L"Joystick - front", L"Joystick - angled", L"Throttle - side and base", L"Complete non-Pro X52", L"Joystick - trigger / pinkie side"});
@@ -296,7 +302,7 @@ struct Picker {
         auto& photo = photos[static_cast<std::size_t>(index)];
         if (!photo) photo = std::make_unique<Photo>(instance, 201 + index);
         Gdiplus::Graphics graphics(draw.hDC);
-        graphics.Clear(Gdiplus::Color(255, 246, 248, 250));
+        graphics.Clear(Gdiplus::Color(255, 22, 38, 43));
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
         const auto width = static_cast<float>(draw.rcItem.right - draw.rcItem.left);
         const auto height = static_cast<float>(draw.rcItem.bottom - draw.rcItem.top);
@@ -344,6 +350,7 @@ INT_PTR CALLBACK DialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         switch (message) {
         case WM_TIMER: picker->Poll(); return TRUE;
         case WM_COMMAND:
+            picker->theme.Command(wParam, lParam);
             switch (LOWORD(wParam)) {
             case IDCANCEL: if (!picker->pending) EndDialog(window, IDCANCEL); return TRUE;
             case IDOK: case SaveLink: if (HIWORD(wParam) == BN_CLICKED) picker->Save(false); return TRUE;
@@ -356,13 +363,14 @@ INT_PTR CALLBACK DialogProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             break;
         case WM_DRAWITEM:
             if (wParam == PhotoCanvas) { picker->Paint(*reinterpret_cast<DRAWITEMSTRUCT*>(lParam)); return TRUE; }
+            if (picker->theme.Draw(*reinterpret_cast<DRAWITEMSTRUCT*>(lParam))) return TRUE;
             break;
-        case WM_CTLCOLORSTATIC:
-            SetBkColor(reinterpret_cast<HDC>(wParam), GetSysColor(COLOR_WINDOW));
-            return reinterpret_cast<INT_PTR>(GetSysColorBrush(COLOR_WINDOW));
-        case WM_ERASEBKGND: {
-            RECT rect{}; GetClientRect(window, &rect); FillRect(reinterpret_cast<HDC>(wParam), &rect, GetSysColorBrush(COLOR_WINDOW)); return TRUE;
-        }
+        case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight = picker->Px(28); return TRUE;
+        case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: case WM_CTLCOLORBTN:
+            return picker->theme.Color(reinterpret_cast<HDC>(wParam), reinterpret_cast<HWND>(lParam), message);
+        case WM_PAINT: picker->theme.Paint(); return TRUE;
+        case WM_ERASEBKGND: return TRUE;
+        case WM_PRINTCLIENT: picker->theme.Background(reinterpret_cast<HDC>(wParam), window); return TRUE;
         case WM_CLOSE: if (!picker->pending) EndDialog(window, IDCANCEL); return TRUE;
         case WM_DESTROY: KillTimer(window, 1); return TRUE;
         }
@@ -381,7 +389,7 @@ void ShowControlPicker(HWND owner, HINSTANCE instance, InspectorService& service
     // An empty Win32 dialog template; typed child controls are created in WM_INITDIALOG.
     struct EmptyTemplate { DLGTEMPLATE dialog{}; WORD menu{}, windowClass{}, title{}; };
     EmptyTemplate resource;
-    resource.dialog.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME;
+    resource.dialog.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | WS_CLIPCHILDREN;
     resource.dialog.cx = 640; resource.dialog.cy = 450;
     const auto result = DialogBoxIndirectParamW(instance, &resource.dialog, owner, DialogProc, reinterpret_cast<LPARAM>(&picker));
     if (result == -1) throw WindowsException("DialogBoxIndirectParamW", GetLastError());

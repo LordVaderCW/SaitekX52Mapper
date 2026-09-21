@@ -23,7 +23,7 @@
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>hid.lib;setupapi.lib;comctl32.lib;shell32.lib;ole32.lib;uuid.lib;gdiplus.lib;shlwapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>hid.lib;setupapi.lib;comctl32.lib;shell32.lib;ole32.lib;uuid.lib;gdiplus.lib;shlwapi.lib;d2d1.lib;dwmapi.lib;uxtheme.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <ResourceCompile><AdditionalIncludeDirectories>$(MSBuildThisFileDirectory);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories></ResourceCompile>
   </ItemDefinitionGroup>

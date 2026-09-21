@@ -148,12 +148,15 @@
     <ClCompile Include="..\src\profiles\LearnedControls.cpp" />
     <ClCompile Include="..\src\profiles\BattlefieldProfiles.cpp" />
     <ClCompile Include="..\src\ui\ControlPicker.cpp" />
+    <ClCompile Include="..\src\ui\BattlefieldTheme.cpp" />
+    <ClCompile Include="..\src\ui\CustomScrollbars.cpp" />
     <ClCompile Include="..\src\ui\InventoryText.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\src\app\InspectorService.hpp" />
     <ClInclude Include="..\src\device\HidEnumerator.hpp" />
     <ClInclude Include="..\src\diagnostics\CaptureAnalysis.hpp" />
+    <ClInclude Include="..\src\diagnostics\GroupActivity.hpp" />
     <ClInclude Include="..\src\diagnostics\Journal.hpp" />
     <ClInclude Include="..\src\diagnostics\Recovery.hpp" />
     <ClInclude Include="..\src\hid\ReportDecoder.hpp" />
@@ -162,6 +165,9 @@
     <ClInclude Include="..\src\profiles\LearnedControls.hpp" />
     <ClInclude Include="..\src\profiles\BattlefieldProfiles.hpp" />
     <ClInclude Include="..\src\ui\ControlPicker.hpp" />
+    <ClInclude Include="..\src\ui\BattlefieldTheme.hpp" />
+    <ClInclude Include="..\src\ui\CustomScrollbars.hpp" />
+    <ClInclude Include="..\src\ui\BufferedPaint.hpp" />
     <ClInclude Include="..\src\ui\ControlPhoto.hpp" />
     <ClInclude Include="..\src\ui\InventoryText.hpp" />
     <ClInclude Include="..\src\util\Text.hpp" />

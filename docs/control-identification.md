@@ -21,6 +21,14 @@ Choose a direction/position for hats or switches exposed as separate HID buttons
 Choose Whole hat for an aggregate hat/scalar value. This does not redefine its
 descriptor decoding or guess the direction-value encoding.
 
+The throttle's rear scroll wheel has separate **Scroll wheel up**, **Scroll wheel
+down**, and **Scroll wheel click / right mouse button (RMB)** choices in both the
+Button and Mouse / scroll filters (and All control types). Selecting one fixes its
+direction automatically. Existing `throttle.scroll` links keep their original
+`Wheel up`, `Wheel down`, or `Wheel press` identity, so changing filters cannot
+create duplicate links. The whole-wheel scalar choice remains under Mouse / scroll.
+The photo circle marks the rear wheel's area; the wheel is hidden on the far side.
+
 The live value, observed range and latest transition help check that the selected
 row responds to the operated control. Short button transitions are retained by
 the worker even when they occur between UI refreshes. Some mouse/MFD features may

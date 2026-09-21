@@ -151,3 +151,54 @@ unchanged from the previously verified driver roundtrip; this revision changes
 UI scheduling to a 33 ms, one-in-flight/latest-pending mechanism. No additional
 hardware setting writes were performed during this build verification. Physical
 brightness tracking during a real drag remains a user observation.
+
+## Log-only mapped activity monitor - 2026-09-21
+
+Canonical x64 Debug and Release builds and core tests passed. Synthetic cases
+cover frozen stick plus moving throttle, button-only throttle evidence, noise
+rejection, episode start/end, invalid reports, report-ID isolation and separation
+from recovery actions. Capture tests cover per-control activity, report gaps and
+pre-roll duration/size/count bounds. Real in-game drift lock remains unverified;
+normal intentional stick holds can generate the same activity observation.
+
+## Battlefield-style UI - 2026-09-21
+
+Debug/Release builds and core tests passed. Native window-rendered previews were
+inspected for Live inputs, Learn controls, Connection health, HID inventory,
+Battlefield profiles, MFD & LEDs, the photo identification dialog and an expanded
+clock selector. Tested page switching and opening/cancelling the picker without
+saving. Settings pages performed readback only; no brightness/clock/clutch writes.
+Direct2D is hardware-preferred with GDI fallback; GPU backend was not profiled.
+
+## Custom scrollbar regression - 2026-09-21
+
+Both x64 configurations built and passed the core suite including ScrollbarTests.
+The tests create real, isolated Win32 edit/list-view/list-box controls without
+hardware interaction. They check thumb geometry, page/drag/keyboard/wheel input,
+visibility, clipping, resize and target-first destruction. A page-hiding defect
+found by these tests was corrected before final verification. Running-app previews
+show custom scrollbars at the top and bottom of the live table and on text panels.
+
+## Buffered painting and eased scrolling - 2026-09-21
+
+Added RAII memory-DC buffering for custom scrollbars, buttons, headers, selectors,
+sliders, static labels/photo panels and native edit/list-box clients. List views
+explicitly retain LVS_EX_DOUBLEBUFFER; the Direct2D main surface retains its own
+presentation buffer and its GDI fallback now uses the same complete-frame helper.
+Buffers are scoped to each paint, released after presentation, with direct-paint
+fallback if allocation fails.
+
+Wheel input over content or its bar, Shift-wheel, horizontal wheel, bar arrow/page
+keys and track paging now ease for 140 ms on a 16 ms UI timer. Repeated input adds
+to the pending destination. Partial wheel deltas accumulate; Windows wheel amount
+and client-area-animation preferences are respected. Thumb position interpolates
+continuously; native text/table/list vertical content remains line/row granular.
+Dragging and Home/End stay immediate. Hiding, range changes, external scrolling
+and destruction cancel animations; there is no idle animation loop.
+
+Debug and Release x64 solution builds and core tests passed. Added native-control
+regressions for deferred paging, wheel bursts/partial deltas, cancellation on Home
+and hide, and buffered presentation/GDI resource release across repeated frames.
+Inspected running-app Live inputs, HID inventory and physical-control picker
+previews. Existing Visual Studio Debug app is running. No hardware settings writes
+or game-output changes were made.

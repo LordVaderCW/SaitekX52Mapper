@@ -8,12 +8,30 @@
 #include "ui/ControlPhoto.hpp"
 #include <iostream>
 #include <stdexcept>
+void ScrollbarTests();
+void ThemeTests();
 
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
 void Tests()
 {
+    ScrollbarTests();
+    ThemeTests();
     using namespace x52;
+    {
+        std::wstring executable(32768, L'\0');
+        const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+        Require(length > 0 && length < executable.size(), "test executable path available");
+        executable.resize(length);
+        const auto expected = std::filesystem::path(executable).parent_path() / L"data";
+        Require(DefaultDataDirectory() == expected, "application data lives beside executable");
+        struct RestoreDirectory {
+            std::filesystem::path previous = std::filesystem::current_path();
+            ~RestoreDirectory() { std::error_code error; std::filesystem::current_path(previous, error); }
+        } restore;
+        std::filesystem::current_path(std::filesystem::temp_directory_path());
+        Require(DefaultDataDirectory() == expected, "application data does not follow launcher working directory");
+    }
     Require(Normalize(0, 0, 100) == -1 && Normalize(50, 0, 100) == 0 && Normalize(100, 0, 100) == 1, "normalization endpoints");
     AxisFilter filter; AxisFilterSettings filterSettings;
     X52State noisy;
@@ -102,6 +120,47 @@ void Tests()
     stationary.settings.blendMs = 0;
     for (int i = 0; i < 200; ++i) (void)stationary.Process(physical, assignments, 0, true, i * 10);
     Require(stationary.state == RecoveryState::Normal && stationary.health.metrics.suspectedDropouts == 0, "stationary controls never imply dropout");
+    GroupActivityMonitor activity;
+    auto frozen = physical;
+    Require(!activity.Observe(frozen, assignments, 0, true, 0), "first report establishes activity baseline");
+    for (int i = 1; i <= 40; ++i) {
+        frozen.controls.at("throttle").raw = 75 + i % 2;
+        Require(!activity.Observe(frozen, assignments, 0, true, i * 10), "throttle jitter does not open an activity observation");
+    }
+    frozen.controls.at("throttle").raw = 85;
+    Require(!activity.Observe(frozen, assignments, 0, true, 410), "one throttle displacement is not sustained activity evidence");
+    frozen.controls.at("throttle").raw = 95;
+    const auto began = activity.Observe(frozen, assignments, 0, true, 420);
+    Require(began && began->started && began->unchangedSinceMs == 0 && activity.observationActive,
+        "frozen stick and repeated throttle activity produce a log-only observation");
+    Require(frozen.controls.at("stick").normalized == 1 && stationary.health.metrics.suspectedDropouts == 0,
+        "activity logging never modifies input or dropout counters");
+    Require(!activity.Observe(frozen, assignments, 0, true, 430), "ongoing observation is not logged every report");
+    frozen.controls.at("stick").raw = 99;
+    const auto resumed = activity.Observe(frozen, assignments, 0, true, 440);
+    Require(resumed && !resumed->started && !activity.observationActive, "stick change ends observation once");
+    Require(activity.groups[1].axisChanges == 1 && activity.groups[2].axisChanges > 2,
+        "raw group activity preserves jitter separately from candidate threshold");
+    activity.Reset();
+    auto digital = physical;
+    digital.controls.at("throttle").kind = ControlKind::Button;
+    digital.controls.at("throttle").raw = 0;
+    (void)activity.Observe(digital, assignments, 0, true, 0);
+    digital.controls.at("throttle").raw = 1;
+    Require(!activity.Observe(digital, assignments, 0, true, 100), "short interval does not start observation");
+    digital.controls.at("throttle").raw = 0;
+    Require(activity.Observe(digital, assignments, 0, true, 300).has_value(), "button press/release proves throttle changes without analogue movement");
+    const auto interrupted = activity.Observe(digital, assignments, 0, false, 310);
+    Require(interrupted && !interrupted->started && !activity.observationActive, "invalid report interrupts observation");
+    digital.controls.at("stick").raw = 0;
+    Require(!activity.Observe(digital, assignments, 0, true, 320), "report after parser failure creates a fresh baseline");
+    activity.Reset();
+    digital.controls.at("throttle").reportId = 1;
+    (void)activity.Observe(digital, assignments, 0, true, 0);
+    for (int i = 1; i <= 10; ++i) {
+        digital.controls.at("throttle").raw = i % 2;
+        Require(!activity.Observe(digital, assignments, 1, true, i * 100), "throttle-only reports cannot establish fresh frozen-stick observation");
+    }
     stationary.Tick(5000);
     Require(!stationary.SafeState(physical, assignments, 5000).controls.at("stick").valid &&
         stationary.health.stick == StickHealth::Unknown, "watchdog withholds stale input without inventing diagnosis");
@@ -178,6 +237,35 @@ void Tests()
     Require(LoadAssignments(file).at("r0:p9:u1:l1").part == "Right", "existing link can be corrected");
     RemoveAssignment(file, "r0:p9:u1:l1");
     Require(!LoadAssignments(file).contains("r0:p9:u1:l1") && LoadAssignments(file).contains("r0:p1:u30:l1"), "clear affects only selected HID link");
+    const auto throttleButtons = PhysicalChoices(InputGroup::Throttle, PhysicalKind::Button);
+    const auto throttleMouse = PhysicalChoices(InputGroup::Throttle, PhysicalKind::Mouse);
+    std::set<std::string> wheelParts;
+    for (const auto& choice : throttleButtons) {
+        Require(choice.control->group == InputGroup::Throttle, "throttle picker excludes stick controls");
+        if (choice.control->id != "throttle.scroll") continue;
+        Require(CanLink(*choice.control, choice.fixedPart, ControlKind::Button) &&
+            !CanLink(*choice.control, choice.fixedPart, ControlKind::Axis), "wheel button choices reject scalar HID values");
+        Require(wheelParts.insert(choice.fixedPart).second, "wheel actions appear once in button list");
+        const auto mouseChoice = std::find_if(throttleMouse.begin(), throttleMouse.end(), [&](const auto& other) {
+            return other.control->id == choice.control->id && other.fixedPart == choice.fixedPart;
+        });
+        Require(mouseChoice != throttleMouse.end(), "wheel action identity is shared across button and mouse filters");
+        const std::string row = "wheel-test-" + std::to_string(wheelParts.size());
+        LearnedControl wheel{PhysicalName(*choice.control, choice.fixedPart), InputGroup::Throttle, 0,
+            choice.control->id, choice.fixedPart, "USER_ASSIGNED"};
+        SaveAssignment(file, row, wheel, {{"test", true}});
+        const auto saved = LoadAssignments(file).at(row);
+        Require(saved.physicalId == "throttle.scroll" && saved.part == choice.fixedPart, "wheel links retain legacy ID and part on reload");
+        bool duplicateWheelRejected = false;
+        try { SaveAssignment(file, "duplicate-wheel", wheel, Json::object()); }
+        catch (const std::exception&) { duplicateWheelRejected = true; }
+        Require(duplicateWheelRejected, "same wheel action cannot be assigned through another picker alias");
+    }
+    Require(wheelParts == std::set<std::string>{"Wheel up", "Wheel down", "Wheel press"}, "button picker exposes all three rear wheel actions");
+    const auto stickChoices = PhysicalChoices(InputGroup::Stick);
+    Require(std::none_of(stickChoices.begin(), stickChoices.end(), [](const auto& choice) {
+        return choice.control->id == "throttle.scroll";
+    }), "wheel actions respect hardware unit filter");
     const auto rejected = [&file](const std::string& content) {
         { std::ofstream stream(file); stream << content; }
         try { (void)LoadAssignments(file); return false; } catch (const std::exception&) { return true; }
@@ -195,6 +283,26 @@ void Tests()
     const auto analysis = AnalyzeCapture(trace, assignments, 1000);
     Require(analysis.at("marked_intervals")[0].at("learned_throttle_changes") == 1 &&
         analysis.at("marked_intervals")[0].at("duration_ms") == 300 && !analysis.at("verified_signature").get<bool>(), "capture analysis preserves evidence vs inference");
+    Require(analysis.at("activity").at("controls").at("throttle").at("raw_changes") == 1 &&
+        analysis.at("activity").at("groups").at("stick").at("axis_raw_changes") == 0 &&
+        analysis.at("activity").at("report_timing").at("0").at("max_gap_ms") == 200,
+        "capture summarizes per-control changes and report gaps using learned groups");
+    const std::vector<Json> brokenTrace{record(0, 0), {{"event", "report"}, {"qpc", 10}, {"valid", false}}, record(20, 1)};
+    const auto broken = AnalyzeCapture(brokenTrace, assignments, 1000);
+    Require(broken.at("activity").at("controls").at("throttle").at("raw_changes") == 0 &&
+        broken.at("activity").at("invalid_reports") == 1, "invalid-report discontinuity is not counted as observed physical movement");
+    ReportHistory history(10000);
+    for (int i = 0; i <= 1200; ++i) history.Push(record(i * 10, 0));
+    Require(history.Records().size() == 1001 && history.Records().front().at("qpc") == 2000,
+        "pre-roll retains ten seconds instead of only 200 reports");
+    history.Trim(23001);
+    Require(history.Records().empty(), "capture start removes expired pre-roll after silence");
+    ReportHistory bounded(10000, 1024 * 1024, 2);
+    bounded.Push(record(0, 0)); bounded.Push(record(1, 0)); bounded.Push(record(2, 0));
+    Require(bounded.Records().size() == 2, "pre-roll count bound enforced");
+    ReportHistory tiny(10000, 1);
+    tiny.Push(record(0, 0));
+    Require(tiny.Records().empty(), "oversized record cannot bypass pre-roll byte bound");
     std::cout << "Core tests passed\n";
 }
 }

@@ -1,6 +1,7 @@
 #include "app/InspectorService.hpp"
 #include "util/Text.hpp"
 #include "ui/ControlPicker.hpp"
+#include "ui/BattlefieldTheme.hpp"
 #include "profiles/BattlefieldProfiles.hpp"
 #include <commctrl.h>
 #include <dbt.h>
@@ -15,6 +16,8 @@
 namespace {
 using namespace x52;
 constexpr wchar_t WindowClass[] = L"X52BattlefieldMapper.Inspector";
+constexpr int NavigationBase = 700;
+constexpr std::array PageNames{L"LIVE INPUTS", L"LEARN CONTROLS", L"CONNECTION HEALTH", L"HID INVENTORY", L"BATTLEFIELD PROFILES", L"MFD & LEDS"};
 enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, CaptureStart,
     CaptureStop, Dropout, Returned, Apply, ControlList, Tabs, Candidate, Name, Group, Neutral,
     Hold, Blend, Validation, Stale, CaptureLabel, IdentifySelected,
@@ -42,6 +45,10 @@ std::wstring Number(double value)
     out << std::fixed << std::setprecision(3) << value;
     return out.str();
 }
+void EnableIfChanged(HWND window, bool enabled)
+{
+    if ((IsWindowEnabled(window) != FALSE) != enabled) EnableWindow(window, enabled);
+}
 double Numeric(HWND control)
 {
     const auto text = Text(control);
@@ -51,6 +58,7 @@ double Numeric(HWND control)
     return value;
 }
 struct Application {
+    BattlefieldTheme theme;
     InspectorService service{DefaultDataDirectory()};
     HWND window{}, title{}, subtitle{}, status{}, tabs{}, list{}, raw{}, learnInfo{}, health{}, inventory{}, footer{};
     HINSTANCE instance{};
@@ -73,24 +81,35 @@ struct Application {
     std::optional<DWORD> pendingLed;
     ULONGLONG nextLedWrite{};
     bool liveLedWrite{};
+    std::vector<std::pair<MfdOption, DWORD>> pendingMfdChanges;
+    bool pendingMfdRefresh{};
     DWORD rememberedLed{100};
     bool filterUiLoaded{}, mfdTried{};
     bool Checked(int id) const { return SendMessageW(Item(id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
-    void Check(int id, bool value) { SendMessageW(Item(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
-    void MfdEnabled(bool enabled, bool keepSlider = false)
+    void Check(int id, bool value) { if (Checked(id) != value) SendMessageW(Item(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
+    void MfdEnabled(bool enabled)
     {
-        for (const auto id : {MfdClutch, MfdLatched, MfdLight, LedLight, ClockSelect, ClockFormat}) EnableWindow(Item(id), enabled);
-        // Do not disable/re-enable a captured trackbar: doing so interrupts dragging.
-        if (!keepSlider) EnableWindow(Item(LedLevel), enabled);
-        EnableWindow(Item(MfdLatched), enabled && Checked(MfdClutch));
+        for (const auto id : {MfdClutch, MfdLight, LedLight, ClockSelect, ClockFormat}) EnableIfChanged(Item(id), enabled);
+        EnableIfChanged(Item(LedLevel), enabled);
+        EnableIfChanged(Item(MfdLatched), enabled && Checked(MfdClutch));
     }
     void StartMfd(std::optional<std::pair<MfdOption, DWORD>> change = {}, bool fromSlider = false)
     {
-        if (mfdTask.valid()) return;
+        if (mfdTask.valid()) {
+            if (change) {
+                const auto existing = std::find_if(pendingMfdChanges.begin(), pendingMfdChanges.end(),
+                    [&](const auto& queued) { return queued.first == change->first; });
+                if (existing != pendingMfdChanges.end()) existing->second = change->second;
+                else pendingMfdChanges.push_back(*change);
+            } else pendingMfdRefresh = true;
+            return;
+        }
         mfdTried = true;
         liveLedWrite = fromSlider;
-        MfdEnabled(false, fromSlider); EnableWindow(Item(MfdRefresh), FALSE);
-        SetText(Item(MfdInfo), change ? L"Applying setting and reading it back from the driver..." : L"Reading settings from the X52 driver...");
+        // Live writes leave unrelated controls untouched. Other edits are queued
+        // behind the current driver operation instead of being dropped.
+        if (!mfdSettings) { MfdEnabled(false); EnableIfChanged(Item(MfdRefresh), false); }
+        if (!fromSlider) SetText(Item(MfdInfo), change ? L"Applying setting and reading it back from the driver..." : L"Reading settings from the X52 driver...");
         mfdTask = std::async(std::launch::async, [change] {
             std::vector<std::wstring> paths;
             for (const auto& device : EnumerateHid()) if (device.isPs28()) paths.push_back(device.path);
@@ -98,17 +117,34 @@ struct Application {
             return change ? SetMfdOption(paths.front(), change->first, change->second) : ReadMfdSettings(paths.front());
         });
     }
+    bool MfdQueued(MfdOption option) const
+    {
+        return std::any_of(pendingMfdChanges.begin(), pendingMfdChanges.end(),
+            [option](const auto& queued) { return queued.first == option; });
+    }
+    void SendPendingMfd()
+    {
+        if (mfdTask.valid()) return;
+        if (!pendingMfdChanges.empty()) {
+            const auto change = pendingMfdChanges.front();
+            pendingMfdChanges.erase(pendingMfdChanges.begin());
+            StartMfd(change);
+        } else if (pendingMfdRefresh) { pendingMfdRefresh = false; StartMfd(); }
+    }
     void ShowClockFormat()
     {
         const auto clock = SendMessageW(Item(ClockSelect), CB_GETCURSEL, 0, 0);
-        if (mfdSettings && clock >= 0 && clock < 3)
-            SendMessageW(Item(ClockFormat), CB_SETCURSEL, mfdSettings->twelveHour[static_cast<std::size_t>(clock)] ? 1 : 0, 0);
+        if (mfdSettings && clock >= 0 && clock < 3 && !MfdQueued(static_cast<MfdOption>(static_cast<int>(MfdOption::Clock1) + clock))) {
+            const auto format = mfdSettings->twelveHour[static_cast<std::size_t>(clock)] ? 1 : 0;
+            if (SendMessageW(Item(ClockFormat), CB_GETCURSEL, 0, 0) != format)
+                SendMessageW(Item(ClockFormat), CB_SETCURSEL, format, 0);
+        }
     }
     void SendPendingLed()
     {
         if (!pendingLed || !mfdSettings || mfdTask.valid()) return;
         if (*pendingLed == mfdSettings->ledBrightness) {
-            pendingLed.reset(); MfdEnabled(true); EnableWindow(Item(MfdRefresh), TRUE); return;
+            pendingLed.reset(); return;
         }
         if (GetTickCount64() < nextLedWrite) return;
         const auto value = *pendingLed;
@@ -130,15 +166,19 @@ struct Application {
     void PollMfd()
     {
         if (page == 5 && !mfdTried) StartMfd();
+        SendPendingMfd();
         SendPendingLed();
         if (!mfdTask.valid() || mfdTask.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
         try {
             mfdSettings = mfdTask.get(); const auto& values = *mfdSettings;
-            Check(MfdClutch, values.clutch); Check(MfdLatched, values.latched);
-            Check(MfdLight, values.mfdBrightness != 0); Check(LedLight, values.ledBrightness != 0);
+            if (!MfdQueued(MfdOption::Clutch)) Check(MfdClutch, values.clutch);
+            if (!MfdQueued(MfdOption::Latched)) Check(MfdLatched, values.latched);
+            if (!MfdQueued(MfdOption::MfdBrightness)) Check(MfdLight, values.mfdBrightness != 0);
+            if (!MfdQueued(MfdOption::LedBrightness) && !pendingLed) Check(LedLight, values.ledBrightness != 0);
             if (values.ledBrightness) rememberedLed = values.ledBrightness;
-            if (!liveLedWrite) {
-                SendMessageW(Item(LedLevel), TBM_SETPOS, TRUE, values.ledBrightness);
+            if (!liveLedWrite && !pendingLed && !MfdQueued(MfdOption::LedBrightness)) {
+                if (SendMessageW(Item(LedLevel), TBM_GETPOS, 0, 0) != values.ledBrightness)
+                    SendMessageW(Item(LedLevel), TBM_SETPOS, TRUE, values.ledBrightness);
                 SetText(Item(LedPercent), std::to_wstring(values.ledBrightness) + L"%");
             }
             ShowClockFormat();
@@ -148,13 +188,14 @@ struct Application {
                 L"I is available as a regular button, including in our profile editor.\r\nChanges are checked against the driver after applying.");
         } catch (const std::exception& error) {
             pendingLed.reset();
+            pendingMfdChanges.clear(); pendingMfdRefresh = false;
             mfdSettings.reset(); MfdEnabled(false);
             SetText(Item(MfdInfo), L"Settings unavailable: " + Wide(error.what()) + L"\r\nRefresh to read the actual state before making another change.");
         }
-        EnableWindow(Item(MfdRefresh), TRUE);
+        EnableIfChanged(Item(MfdRefresh), true);
         liveLedWrite = false;
+        SendPendingMfd();
         SendPendingLed();
-        if (pendingLed) { MfdEnabled(false, true); EnableWindow(Item(MfdRefresh), FALSE); }
     }
 
     ~Application()
@@ -168,21 +209,25 @@ struct Application {
         int x, int y, int w, int h, DWORD style = 0, bool sx = false, bool sy = false)
     {
         const bool isEdit = std::wstring_view(cls) == L"EDIT";
-        const auto handle = CreateWindowExW(isEdit ? WS_EX_CLIENTEDGE : 0, cls, text,
+        if (std::wstring_view(cls) == L"STATIC" && !(style & SS_OWNERDRAW)) style |= SS_NOPREFIX;
+        if (std::wstring_view(cls) == L"COMBOBOX") style |= CBS_OWNERDRAWFIXED | CBS_HASSTRINGS;
+        if (std::wstring_view(cls) == L"LISTBOX") style |= LBS_OWNERDRAWFIXED | LBS_HASSTRINGS;
+        const auto handle = CreateWindowExW(0, cls, text,
             WS_CHILD | WS_VISIBLE | style, x, y, w, h, window,
             reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
         if (!handle) throw WindowsException("CreateWindowExW (control)", GetLastError());
         children.push_back({handle, targetPage, x, y, w, h, sx, sy});
         if (isEdit) SendMessageW(handle, EM_SETLIMITTEXT, 4 * 1024 * 1024, 0);
+        theme.Style(handle);
         return handle;
     }
     void Fonts()
     {
         for (auto font : {normal, heading, mono}) if (font) DeleteObject(font);
-        normal = CreateFontW(-MulDiv(14, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-        heading = CreateFontW(-MulDiv(26, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+        normal = CreateFontW(-MulDiv(16, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Bahnschrift");
+        heading = CreateFontW(-MulDiv(38, dpi, 96), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Bahnschrift SemiCondensed");
         mono = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
         if (!normal || !heading || !mono) throw WindowsException("CreateFontW", GetLastError());
@@ -193,24 +238,27 @@ struct Application {
     void Create()
     {
         dpi = static_cast<int>(GetDpiForWindow(window));
-        title = Add(L"STATIC", L"X52 Battlefield Mapper", 0, -1, 24, 18, 650, 38);
-        subtitle = Add(L"STATIC", L"X52 INSPECTOR + BATTLEFIELD PROFILE AUTHORING   /   Logitech activates exported profiles", 0, -1, 26, 62, 960, 23, 0, true);
-        status = Add(L"STATIC", L"Discovering Saitek X52...", 0, -1, 26, 94, 960, 23, 0, true);
+        theme.Attach(window);
+        title = Add(L"STATIC", PageNames[0], 0, -1, 36, 54, 980, 50);
+        subtitle = Add(L"STATIC", L"X52 BATTLEFIELD MAPPER   /   DEVICE CONTROL   /", 0, -1, 38, 27, 1150, 23, 0, true);
+        status = Add(L"STATIC", L"Discovering Saitek X52...", 0, -1, 38, 116, 1190, 23, 0, true);
         Add(L"BUTTON", L"Reinitialize X52 input", Reinitialize, -1, 24, 129, 190, 32, WS_TABSTOP);
         Add(L"BUTTON", L"Refresh inventory", Refresh, -1, 226, 129, 156, 32, WS_TABSTOP);
         Add(L"BUTTON", L"Export diagnostic", Export, -1, 394, 129, 160, 32, WS_TABSTOP);
         Add(L"BUTTON", L"Open data folder", Folder, -1, 566, 129, 152, 32, WS_TABSTOP);
-        Add(L"BUTTON", L"Identify selected input...", IdentifySelected, -1, 730, 129, 246, 32, WS_TABSTOP);
-        tabs = Add(WC_TABCONTROLW, L"", Tabs, -1, 24, 177, 952, 30, WS_TABSTOP, true);
+        Add(L"BUTTON", L"Identify input...", IdentifySelected, -1, 730, 129, 246, 32, WS_TABSTOP);
         int i = 0;
-        for (const auto label : {L"Live inputs", L"Learn controls", L"Connection health", L"HID inventory", L"Battlefield profiles", L"MFD & LEDs"}) {
-            TCITEMW item{}; item.mask = TCIF_TEXT; item.pszText = const_cast<wchar_t*>(label);
-            if (TabCtrl_InsertItem(tabs, i++, &item) == -1) throw std::runtime_error("Unable to create tab");
+        for (const auto label : PageNames) {
+            const auto nav = Add(L"BUTTON", label, NavigationBase + i, -1, 36, 184 + i * 46, 224, 44, WS_TABSTOP);
+            SetPropW(nav, L"X52.Navigation", reinterpret_cast<HANDLE>(1));
+            if (i++ == 0) SetPropW(nav, L"X52.Selected", reinterpret_cast<HANDLE>(1));
         }
+        Add(L"STATIC", L"", 710, -1, 274, 184, 1, 490, SS_OWNERDRAW, false, true);
+        Add(L"STATIC", L"", 711, -1, 36, 694, 1200, 1, SS_OWNERDRAW, true);
         Add(L"STATIC", L"Double-click a HID row (or press Enter) to link it to a physical X52 button, hat, switch or axis.", 0, 0, 24, 220, 952, 24, 0, true);
         list = Add(WC_LISTVIEWW, L"", ControlList, 0, 24, 254, 952, 204,
             WS_TABSTOP | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS, true, true);
-        ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | LVS_EX_GRIDLINES);
+        ListView_SetExtendedListViewStyle(list, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
         i = 0;
         for (const auto& column : std::array<std::pair<const wchar_t*, int>, 7>{{
             {L"HID usage / report / link", 185}, {L"Physical control link", 260}, {L"Group", 80},
@@ -231,7 +279,7 @@ struct Application {
         learnInfo = Add(L"EDIT", L"No baseline recorded.", 0, 1, 24, 414, 952, 260, ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_TABSTOP, true, true);
         Add(L"STATIC", L"Capture label / cable", 0, 2, 24, 225, 160, 24);
         Add(L"EDIT", L"Old 5 m cable - describe conditions", CaptureLabel, 2, 190, 219, 500, 30, WS_TABSTOP | ES_AUTOHSCROLL);
-        Add(L"BUTTON", L"Start disconnect capture", CaptureStart, 2, 24, 263, 198, 32, WS_TABSTOP);
+        Add(L"BUTTON", L"Start capture", CaptureStart, 2, 24, 263, 198, 32, WS_TABSTOP);
         Add(L"BUTTON", L"Stop / save capture", CaptureStop, 2, 234, 263, 174, 32, WS_TABSTOP);
         Add(L"BUTTON", L"Mark stick dropout", Dropout, 2, 420, 263, 174, 32, WS_TABSTOP);
         Add(L"BUTTON", L"Mark stick returned", Returned, 2, 606, 263, 180, 32, WS_TABSTOP);
@@ -302,7 +350,7 @@ struct Application {
         Add(L"BUTTON", L"Save input filtering", FilterApply, 0, 752, 616, 224, 30, WS_TABSTOP);
         Add(L"STATIC", L"Filters smooth Normalized and Safe internal values here. Raw readings stay unchanged; direct game input is unaffected.", 0, 0, 24, 662, 952, 27, 0, true);
         MfdEnabled(false);
-        footer = Add(L"STATIC", L"", 0, -1, 24, 694, 952, 40, 0, true);
+        footer = Add(L"STATIC", L"", 0, -1, 36, 707, 1200, 36, 0, true);
         Fonts();
         DEV_BROADCAST_DEVICEINTERFACE_W filter{};
         filter.dbcc_size = sizeof(filter); filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
@@ -316,18 +364,25 @@ struct Application {
     }
     void Layout()
     {
+        theme.Resize(); // update backdrop before children paint at their new positions
         RECT rect{}; GetClientRect(window, &rect);
-        const auto extraX = MulDiv(rect.right, 96, dpi) - 1000;
+        const auto extraX = MulDiv(rect.right, 96, dpi) - 1280;
         const auto extraY = MulDiv(rect.bottom, 96, dpi) - 750;
         for (const auto& child : children) {
-            auto y = child.y;
-            if (child.handle == footer || (child.page == 0 && child.y >= 474)) y += extraY;
-            if (!MoveWindow(child.handle, MulDiv(child.x, dpi, 96), MulDiv(y, dpi, 96),
-                MulDiv(std::max(1, child.w + (child.stretchX ? extraX : 0)), dpi, 96),
+            auto x = child.x, y = child.y, w = child.w;
+            if (child.page >= 0) { x += 264; y -= 35; }
+            const auto id = GetDlgCtrlID(child.handle);
+            const std::array actions{Reinitialize, Refresh, Export, Folder, IdentifySelected};
+            const auto action = std::find(actions.begin(), actions.end(), id);
+            if (action != actions.end()) { x = 36; y = 504 + static_cast<int>(action - actions.begin()) * 36; w = 224; }
+            if (child.handle == footer || id == 711 || (child.page == 0 && child.y >= 474)) y += extraY;
+            if (!MoveWindow(child.handle, MulDiv(x, dpi, 96), MulDiv(y, dpi, 96),
+                MulDiv(std::max(1, w + (child.stretchX ? extraX : 0)), dpi, 96),
                 MulDiv(std::max(1, child.h + (child.stretchY ? extraY : 0)), dpi, 96), TRUE))
                 throw WindowsException("MoveWindow", GetLastError());
             ShowWindow(child.handle, child.page == -1 || child.page == page ? SW_SHOW : SW_HIDE);
         }
+        RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ALLCHILDREN);
     }
     void Poll()
     {
@@ -337,15 +392,15 @@ struct Application {
             SetText(Item(FilterTime), Number(last.filters.smoothingMs)); SetText(Item(FilterJitter), Number(last.filters.jitterCounts));
             filterUiLoaded = true;
         }
-        EnableWindow(Item(FilterApply), filterUiLoaded);
+        EnableIfChanged(Item(FilterApply), filterUiLoaded);
         PollMfd();
         SetText(status, (last.connected ? L"CONNECTED   |   " : L"NOT CONNECTED   |   ") + last.device +
             L"   |   Reports: " + std::to_wstring(last.sequence));
         SetText(footer, Wide(last.error.empty() ? last.status : "ERROR: " + last.error));
-        EnableWindow(Item(Learn), last.connected && last.sequence > 0);
-        EnableWindow(Item(SaveLearn), last.learning && !last.learnCandidates.empty());
-        EnableWindow(Item(CaptureStart), !last.captureActive);
-        EnableWindow(Item(Returned), last.recovery.stickSuspended);
+        EnableIfChanged(Item(Learn), last.connected && last.sequence > 0);
+        EnableIfChanged(Item(SaveLearn), last.learning && !last.learnCandidates.empty());
+        EnableIfChanged(Item(CaptureStart), !last.captureActive);
+        EnableIfChanged(Item(Returned), last.recovery.stickSuspended);
         if (page == 0) {
             std::vector<std::string> keys;
             for (const auto& [id, control] : last.physical.controls) { (void)control; keys.push_back(id); }
@@ -412,7 +467,20 @@ struct Application {
             const auto& metrics = last.recovery.health.metrics;
             const auto msNow = 1000.0 * static_cast<double>(Qpc()) / static_cast<double>(QpcFrequency());
             std::wostringstream text;
-            text << L"USB handle: " << (last.connected ? L"OPEN" : L"CLOSED")
+            text << L"Stick/throttle comparison: LOG ONLY (no automatic input or recovery changes)\r\n"
+                << L"Activity observations: " << last.activityObservations
+                << (last.activityObservationActive ? L"  |  Stick unchanged while throttle activity observed" : L"  |  No active observation") << L"\r\n";
+            for (const auto group : {InputGroup::Stick, InputGroup::Throttle, InputGroup::Unknown}) {
+                const auto& activity = last.activity.at(static_cast<std::size_t>(group));
+                text << (group == InputGroup::Stick ? L"Stick" : group == InputGroup::Throttle ? L"Throttle" : L"Unassigned")
+                    << L": " << activity.controls << L" inputs | raw axis changes: " << activity.axisChanges
+                    << L" | button/hat changes: " << activity.digitalChanges;
+                if (activity.lastChangeMs) text << L" | last: " << Wide(activity.lastControl) << L" ("
+                    << static_cast<long long>(msNow - *activity.lastChangeMs) << L" ms ago)";
+                text << L"\r\n";
+            }
+            text << L"Raw axis changes include noise. Holding the stick still can produce the same observation.\r\n\r\n"
+                << L"USB handle: " << (last.connected ? L"OPEN" : L"CLOSED")
                 << L"     Report freshness: " << (last.recovery.transportAvailable ? L"CURRENT" : L"UNAVAILABLE / STALE")
                 << L"\r\nStick health: " << Wide(HealthName(last.recovery.health.stick))
                 << L"\r\nRecovery: " << Wide(RecoveryName(last.recovery.state))
@@ -426,7 +494,7 @@ struct Application {
                 << L"\r\nCapture: " << (last.captureActive ? L"RECORDING" : L"stopped") << L"     Reports captured: " << last.captureReports
                 << L"\r\nDecode + internal safety processing: " << Number(last.processMs) << L" ms (latest sample; excludes USB/UI/disk)"
                 << L"\r\n\r\nNo verified stick-side signature. Markers record your observation, not an automatic diagnosis."
-                << L"\r\nLearn stick/throttle groups before assessing activity. Unassigned controls are withheld on marked dropout."
+                << L"\r\nRecent raw history: up to 10 seconds (bounded by size). Mark a physical dropout promptly to retain it."
                 << L"\r\nReinitialize restarts Windows reads; it does not electrically reset the joystick."
                 << L"\r\nVirtual controller: not implemented in this milestone.\r\nData: " << service.directory().wstring();
             SetText(health, text.str());
@@ -434,12 +502,22 @@ struct Application {
     }
     void Command(int id)
     {
+        if (id >= NavigationBase && id < NavigationBase + static_cast<int>(PageNames.size())) {
+            page = id - NavigationBase;
+            for (int i = 0; i < static_cast<int>(PageNames.size()); ++i) {
+                const auto nav = Item(NavigationBase + i);
+                if (i == page) SetPropW(nav, L"X52.Selected", reinterpret_cast<HANDLE>(1));
+                else RemovePropW(nav, L"X52.Selected");
+                InvalidateRect(nav, nullptr, FALSE);
+            }
+            SetText(title, PageNames[static_cast<std::size_t>(page)]); Layout(); Poll(); return;
+        }
         switch (id) {
         case MfdRefresh: StartMfd(); break;
         case MfdClutch: StartMfd({{MfdOption::Clutch, Checked(id)}}); break;
         case MfdLatched: StartMfd({{MfdOption::Latched, Checked(id)}}); break;
         case MfdLight: StartMfd({{MfdOption::MfdBrightness, Checked(id) ? 100u : 0u}}); break;
-        case LedLight: StartMfd({{MfdOption::LedBrightness, Checked(id) ? rememberedLed : 0}}); break;
+        case LedLight: pendingLed.reset(); StartMfd({{MfdOption::LedBrightness, Checked(id) ? rememberedLed : 0}}); break;
         case ClockSelect: ShowClockFormat(); break;
         case ClockFormat: {
             const auto clock = SendMessageW(Item(ClockSelect), CB_GETCURSEL, 0, 0);
@@ -623,7 +701,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
         case WM_SIZE: app->Layout(); return 0;
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize = {MulDiv(1018, app->dpi, 96), MulDiv(795, app->dpi, 96)}; return 0;
+            info->ptMinTrackSize = {MulDiv(1298, app->dpi, 96), MulDiv(795, app->dpi, 96)}; return 0;
         }
         case WM_DPICHANGED: {
             app->dpi = HIWORD(wParam); app->Fonts();
@@ -635,16 +713,21 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             if (wParam == 1) app->Poll();
             else if (wParam == 2) app->PollMfd();
             return 0;
-        case WM_CTLCOLORSTATIC:
-            SetBkColor(reinterpret_cast<HDC>(wParam), GetSysColor(COLOR_WINDOW));
-            SetTextColor(reinterpret_cast<HDC>(wParam), GetSysColor(COLOR_WINDOWTEXT));
-            return reinterpret_cast<LRESULT>(GetSysColorBrush(COLOR_WINDOW));
+        case WM_PAINT: app->theme.Paint(); return 0;
+        case WM_ERASEBKGND: return 1;
+        case WM_PRINTCLIENT: app->theme.Background(reinterpret_cast<HDC>(wParam), window); return 0;
+        case WM_CTLCOLORSTATIC: case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX: case WM_CTLCOLORBTN:
+            return app->theme.Color(reinterpret_cast<HDC>(wParam), reinterpret_cast<HWND>(lParam), message);
+        case WM_MEASUREITEM: reinterpret_cast<MEASUREITEMSTRUCT*>(lParam)->itemHeight = MulDiv(28, app->dpi, 96); return TRUE;
+        case WM_DRAWITEM: if (app->theme.Draw(*reinterpret_cast<DRAWITEMSTRUCT*>(lParam))) return TRUE; break;
         case WM_HSCROLL:
             if (reinterpret_cast<HWND>(lParam) == app->Item(LedLevel)) app->LedSlider();
             return 0;
         case WM_COMMAND:
+            app->theme.Command(wParam, lParam);
             if (HIWORD(wParam) == BN_CLICKED || ((LOWORD(wParam) == ProfileContext || LOWORD(wParam) == ClockSelect || LOWORD(wParam) == ClockFormat) && HIWORD(wParam) == CBN_SELCHANGE)) app->Command(LOWORD(wParam)); return 0;
         case WM_NOTIFY:
+            if (const auto result = app->theme.Notify(reinterpret_cast<NMHDR*>(lParam))) return *result;
             if (reinterpret_cast<NMHDR*>(lParam)->idFrom == ControlList) {
                 const auto code = reinterpret_cast<NMHDR*>(lParam)->code;
                 if (code == NM_DBLCLK || (code == LVN_KEYDOWN && reinterpret_cast<NMLVKEYDOWN*>(lParam)->wVKey == VK_RETURN)) app->IdentifyRow();
@@ -683,12 +766,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         WNDCLASSEXW windowClass{};
         windowClass.cbSize = sizeof(windowClass); windowClass.lpfnWndProc = WindowProc;
         windowClass.hInstance = instance; windowClass.lpszClassName = WindowClass;
-        windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
+        windowClass.hbrBackground = nullptr;
         windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         if (!RegisterClassExW(&windowClass)) throw WindowsException("RegisterClassExW", GetLastError());
         const auto window = CreateWindowExW(WS_EX_CONTROLPARENT, WindowClass,
-            L"X52 Battlefield Mapper - PS28 Input Inspector", WS_OVERLAPPEDWINDOW,
-            CW_USEDEFAULT, CW_USEDEFAULT, 1180, 900, nullptr, nullptr, instance, &app);
+            L"X52 Battlefield Mapper", WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+            CW_USEDEFAULT, CW_USEDEFAULT, 1440, 960, nullptr, nullptr, instance, &app);
         if (!window) throw WindowsException("CreateWindowExW", GetLastError());
         ShowWindow(window, show);
         MSG message{}; BOOL status{};

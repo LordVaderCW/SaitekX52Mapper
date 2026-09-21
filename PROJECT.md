@@ -268,3 +268,160 @@ Verification: Debug and Release builds and core tests passed; restarted the upda
 Debug app through the existing Visual Studio solution. Live dragging appearance
 has not been visually verified in this turn; no device settings were changed by
 the build/test commands.
+
+## Rear throttle wheel choices - 2026-09-21
+
+The physical-control picker now lists Scroll wheel up, Scroll wheel down, and
+Scroll wheel click / right mouse button (RMB) explicitly under Button, Mouse /
+scroll, and All control types. Each fixes the corresponding part automatically.
+The existing throttle.scroll ID and Wheel up/down/press parts are preserved for
+saved links and duplicate detection; the whole-wheel scalar choice remains in
+Mouse / scroll. The existing photo annotation identifies the rear wheel area
+and explicitly says that the control is on the far side of the photograph.
+No HID numbers are inferred, and no driver or mouse capture behaviour changes.
+
+Verification: canonical x64 Debug and Release builds passed, as did core tests
+in both configurations. Regressions cover all three Button choices, Mouse-filter
+identity, unit filtering, HID type compatibility, saved-link roundtrips and
+ duplicate rejection. Physical wheel input capture has not been tested this turn.
+
+## Mapped stick/throttle observations (log only) - 2026-09-21
+
+Read the user's saved links: all 44 controls assigned, 24 Stick and 20 Throttle.
+The user describes drift lock at the last angle and unresponsive stick buttons,
+with throttle still responsive, and explicitly requests logging only for now.
+
+Added a separate activity observer using those assignments and unfiltered raw
+values. It logs a candidate after at least 250 ms of unchanged freshly sampled
+stick values and repeated throttle activity. Throttle axis evidence requires
+three counts or 2% of range, whichever is greater; button/hat changes count
+without analogue thresholds. Each episode logs a start and end, raw state,
+mapping snapshot and unchanged-since timing in the existing session JSONL log.
+Stick movement ends it; invalid/stale input, closure or remapping interrupts it.
+The observer never invokes recovery, changes safe values or increments confirmed
+or user-marked dropout counts. It can also log normal intentional stick holds;
+it is not a verified protocol signature or a measurement of physical fault duration.
+Faults shorter than 250 ms or without throttle activity may be missed.
+
+Connection health displays group coverage, raw axis changes, button/hat changes,
+last-change ages and log-only observation status. Capture pre-roll now targets ten
+seconds, bounded by 16 MiB encoded bytes and 4096 records. Capture analysis includes
+per-control ranges/transitions/unchanged runs and report gaps/errors; invalid
+report discontinuities are not counted as observed physical movement.
+
+Verification: x64 Debug and Release builds and core tests passed. Tests cover
+frozen-stick/throttle activity, jitter rejection, single-episode start/end,
+parser interruption, report-ID isolation, unchanged safety/dropout counters,
+capture group summaries, timing and pre-roll time/count/byte bounds. No real
+physical dropout was reproduced or claimed, and no hardware settings were written.
+
+## Battlefield-style native interface - 2026-09-21
+
+Restyled the existing Visual Studio application to follow the user's Battlefield
+menu reference: left navigation with white active rows, uppercase Bahnschrift
+headings, thin dividers, dark teal panels, muted text and a soft teal/red backdrop.
+The wider main window retains all six pages, with common actions in the sidebar.
+Tables, headers, native scrollbars, checkboxes, dropdowns, buttons, profile lists,
+LED trackbar and physical-control popup use the shared BattlefieldTheme renderer.
+Native control behaviour, focus and keyboard handling remain in place. No saved
+mapping, device-setting, input-filter or log-only monitor behaviour was changed.
+
+The procedural backdrop is presented with a Direct2D HWND render target (default
+hardware-preferred rendering), with a GDI fallback if Direct2D is unavailable or
+loses its target. Native child controls remain Win32/GDI; no continuous animation
+or rendering thread competes with the HID worker. Background resources are cached
+and rebuilt on resize. The GPU adapter/backend was not separately profiled.
+
+Verification: existing solution built in x64 Debug and Release; core tests passed
+in both. Inspected rendered previews of all six pages, the identification popup
+with its photo marker, and an open clock dropdown. Fixed clipped action labels,
+ampersand rendering and native scrollbar contrast during review. Restarted through
+Visual Studio and returned the running Debug app to Live inputs. Hardware reads
+continued; no device settings or control links were changed during the UI checks.
+Preview artifacts are under out/theme-*.png (not packaged application assets).
+
+## Custom scrollbar controls - 2026-09-21
+
+Replaced the theme's non-client scrollbar overpainting after the user reported
+white patches and redraw glitches. Tables, multiline text panels and the profile
+list now have independent X52.CustomScrollbar windows. Each native content window
+is clipped to its client rectangle; native non-client scrollbar pixels are excluded
+rather than painted over. Native ranges/positions remain the content model.
+
+The custom controls implement proportional thumbs with a minimum hit size,
+hover/drag feedback, mouse capture, track paging/repeat, mouse-wheel forwarding,
+arrow/Page/Home/End keyboard operations, and horizontal/vertical positioning.
+They synchronize with content changes, resize/move and page visibility, and are
+destroyed with their content. The old GetWindowDC scrollbar repaint path is removed.
+No device settings, input mappings or dropout-monitor behaviour were changed.
+
+Verification: canonical x64 Debug and Release builds and core tests passed.
+New native-control tests exercise edit, report-list and list-box scrolling in both
+orientations, full-range thumb geometry, track clicks, captured drags beyond the
+bar, wheel forwarding, page hide/show, window clipping, resizing and destruction.
+Visual checks covered live inputs, HID inventory and Learn controls. In the running
+Debug app, the custom scrollbar moved the live table from row 0 to row 29 and back.
+Visual Studio remains running the rebuilt app, on Live inputs. Preview artifacts:
+out/custom-scroll-live.png, custom-scroll-inventory.png, custom-scroll-learn.png,
+and custom-scroll-bottom.png.
+
+## Scrollbar visual refinement - 2026-09-21
+
+Removed the full-track XOR focus rectangle shown in the user's feedback. The
+scrollbars now have a quiet two-pixel rail and a rounded six-pixel thumb, widening
+to eight pixels on hover, focus or dragging (DPI-scaled). Keyboard focus is shown
+by the thumb's pale cyan fill; dragging uses the brighter selected colour.
+Small end insets keep the thumb away from the panel edges. Full-width hit targets,
+range calculations, scrolling, mouse capture and keyboard handling are unchanged.
+
+Verification: Debug/Release builds and core/native scrollbar tests passed. Inspected
+running-app previews of the idle bar and a clicked/focused bar; the long rectangular
+focus outline is gone. The updated Debug app is running through the existing Visual
+Studio solution. Previews: out/refined-scrollbars.png and refined-scrollbar-focused.png.
+
+## Buffered painting and eased scrolling - 2026-09-21
+
+Added RAII memory-DC buffering for custom scrollbars, buttons, headers, selectors,
+sliders, static labels/photo panels and native edit/list-box clients. List views
+explicitly retain LVS_EX_DOUBLEBUFFER; the Direct2D main surface retains its own
+presentation buffer and its GDI fallback now uses the same complete-frame helper.
+Buffers are scoped to each paint, released after presentation, with direct-paint
+fallback if allocation fails.
+
+Wheel input over content or its bar, Shift-wheel, horizontal wheel, bar arrow/page
+keys and track paging now ease for 140 ms on a 16 ms UI timer. Repeated input adds
+to the pending destination. Partial wheel deltas accumulate; Windows wheel amount
+and client-area-animation preferences are respected. Thumb position interpolates
+continuously; native text/table/list vertical content remains line/row granular.
+Dragging and Home/End stay immediate. Hiding, range changes, external scrolling
+and destruction cancel animations; there is no idle animation loop.
+
+Debug and Release x64 solution builds and core tests passed. Added native-control
+regressions for deferred paging, wheel bursts/partial deltas, cancellation on Home
+and hide, and buffered presentation/GDI resource release across repeated frames.
+Inspected running-app Live inputs, HID inventory and physical-control picker
+previews. Existing Visual Studio Debug app is running. No hardware settings writes
+or game-output changes were made.
+
+## Executable-local application data - 2026-09-21
+
+DefaultDataDirectory now resolves GetModuleFileNameW and returns the executable's
+sibling data directory. No AppData access/fallback remains in the runtime storage
+path; working-directory changes do not relocate saved data. Existing startup/log
+errors handle an unwritable deployment directory. Debug/Release data are separate.
+Updated README, troubleshooting and filter-settings documentation.
+
+Copied and SHA-256 verified all 24 legacy files (111,712,075 bytes), including all
+44 learned controls, into out/x64/Debug/data. Seeded out/x64/Release/data with the
+same learned-controls.json; no saved input-filters.json existed in the source.
+Preserved diagnostic captures and old journals in Debug data. The verification
+manifest is out/data-migration-manifest.json. Debug/Release builds and core tests
+passed, including a new executable-relative path test with a changed working
+directory. Launched the original Visual Studio Debug project, verified the new
+journal is beside the executable and inspected the loaded mapping names.
+
+Cleanup remains incomplete: automatic approval review rejected both recursive
+legacy-folder deletion and a narrower cleanup of only hash-verified duplicate
+files followed by empty-folder removal (blocked by policy; no specific reason).
+The old C:/Users/KingJamesIX/AppData/Local/X52BattlefieldMapper folder remains as
+a duplicate and is no longer used by the rebuilt application. No deletion occurred.

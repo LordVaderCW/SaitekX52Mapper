@@ -3,6 +3,7 @@
 #include "../profiles/LearnedControls.hpp"
 #include "../device/HidEnumerator.hpp"
 #include "../input/AxisFilter.hpp"
+#include "../diagnostics/GroupActivity.hpp"
 #include <deque>
 #include <functional>
 
@@ -15,6 +16,9 @@ struct Snapshot {
     AxisFilterSettings filters;
     bool filtersReady{};
     Assignments assignments;
+    std::array<GroupActivity, 3> activity{};
+    bool activityObservationActive{};
+    std::uint64_t activityObservations{};
     std::vector<std::uint8_t> raw, previous;
     std::vector<BitChange> changes;
     std::vector<std::string> learnCandidates;

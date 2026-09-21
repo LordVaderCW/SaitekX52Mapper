@@ -23,7 +23,10 @@ centred semantics. Hats always use -1 for neutral, buttons 0 for release.
 an observation, not a fault. Learn Mode shows all changed usages; select the one
 with deliberate response and repeat before promoting the assignment's status.
 
-**Log/export:** Open data folder opens `%LOCALAPPDATA%/X52BattlefieldMapper`.
+**Log/export:** Open data folder opens `data` beside `SaitekX52Mapper.exe`.
+The executable folder must be writable. The application does not fall back to
+AppData if this folder cannot be written. Each executable location has its own
+data; copy the folder along with the executable when moving the application.
 Exports are UTF-8 JSON. Raw reports are captured only when explicitly armed; regular
 JSONL logs contain transitions/errors, not every identical report. Capture has a
 64 MiB approximate serialized-data cap (JSON in-memory overhead is higher).

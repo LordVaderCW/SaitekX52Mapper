@@ -147,5 +147,11 @@
     <ClCompile Include="..\src\device\MfdSettings.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClInclude Include="..\src\device\MfdSettings.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\input\AxisFilter.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="..\src\ui\BattlefieldTheme.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="..\src\ui\BattlefieldTheme.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="..\src\ui\CustomScrollbars.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="..\src\ui\CustomScrollbars.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\ui\BufferedPaint.hpp"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="..\src\diagnostics\GroupActivity.hpp"><Filter>Header Files</Filter></ClInclude>
   </ItemGroup>
 </Project>
