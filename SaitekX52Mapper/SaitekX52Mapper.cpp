@@ -12,19 +12,21 @@
 #include <set>
 #include <future>
 #include "device/MfdSettings.hpp"
+#include "device/PowerManagement.hpp"
 
 namespace {
 using namespace x52;
 constexpr wchar_t WindowClass[] = L"X52BattlefieldMapper.Inspector";
 constexpr int NavigationBase = 700;
-constexpr std::array PageNames{L"LIVE INPUTS", L"LEARN CONTROLS", L"CONNECTION HEALTH", L"HID INVENTORY", L"BATTLEFIELD PROFILES", L"MFD & LEDS"};
+constexpr std::array PageNames{L"LIVE INPUTS", L"LEARN CONTROLS", L"CONNECTION HEALTH", L"HID INVENTORY", L"BATTLEFIELD PROFILES", L"MFD & LEDS", L"REGISTRY TWEAKS"};
 enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, CaptureStart,
     CaptureStop, Dropout, Returned, Apply, ControlList, Tabs, Candidate, Name, Group, Neutral,
     Hold, Blend, Validation, Stale, CaptureLabel, IdentifySelected,
     ImportBF3, ImportBF4, ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice,
     AddProfileMapping, RemoveProfileMapping, ExportPr0, ProfileMappingList, ProfileInfo, MfdRefresh, MfdClutch, MfdLatched, MfdLight, LedLight,
     ClockSelect, ClockFormat, LedLevel, LedPercent, MfdInfo,
-    FilterThrottle, FilterSide, FilterTop, FilterSlider, FilterTime, FilterJitter, FilterApply };
+    FilterThrottle, FilterSide, FilterTop, FilterSlider, FilterTime, FilterJitter, FilterApply,
+    PowerRefresh, PowerDisable, PowerRestore, PowerInfo };
 struct Child { HWND handle{}; int page{-1}; int x{}, y{}, w{}, h{}; bool stretchX{}, stretchY{}; };
 std::wstring Text(HWND window)
 {
@@ -71,7 +73,6 @@ struct Application {
     ULONGLONG changesUntil{};
     Snapshot last;
     int profileGame{};
-    Pr0Node profileTemplate;
     std::vector<BattlefieldBinding> battlefieldBindings, actionChoices;
     std::vector<ProfileButton> profileButtons;
     std::vector<ProfileMapping> profileMappings;
@@ -85,6 +86,57 @@ struct Application {
     bool pendingMfdRefresh{};
     DWORD rememberedLed{100};
     bool filterUiLoaded{}, mfdTried{};
+    bool powerTried{};
+    std::optional<X52PowerDevice> powerDevice;
+    std::unique_ptr<UniqueHandle> powerProcess;
+    std::wstring powerResult;
+    void RefreshPower()
+    {
+        powerTried = true; powerDevice.reset();
+        EnableIfChanged(Item(PowerDisable), false); EnableIfChanged(Item(PowerRestore), false);
+        try {
+            const auto devices = ReadX52PowerDevices();
+            if (devices.size() != 1) throw std::runtime_error("Connect exactly one original X52 (VID 06A3 / PID 075C), then refresh");
+            powerDevice = devices.front();
+            const auto& device = *powerDevice;
+            const auto backup = PowerBackupPath(service.directory(), device.instance);
+            SetText(Item(PowerInfo), L"X52 USB device instance\r\n" + device.instance + L"\r\n\r\nHKLM\\" + device.registryPath +
+                L"\r\n\r\nEnhancedPowerManagementEnabled = " + (device.value ? std::to_wstring(*device.value) + L" (DWORD)" : L"not present") +
+                L"\r\n" + (device.value == DWORD{0} ? L"Enhanced power management is disabled in the registry." : L"Disable sets this one device value to DWORD 0.") +
+                L"\r\n\r\nOriginal-value backup:\r\n" + backup.wstring() + L"\r\n\r\n" + powerResult);
+            EnableIfChanged(Item(PowerDisable), !powerProcess && device.value != DWORD{0});
+            EnableIfChanged(Item(PowerRestore), !powerProcess && std::filesystem::exists(backup));
+        } catch (const std::exception& error) { SetText(Item(PowerInfo), L"Registry settings unavailable: " + Wide(error.what())); }
+    }
+    void ChangePower(bool restore)
+    {
+        if (powerProcess) return;
+        RefreshPower();
+        if (!powerDevice) return;
+        std::wstring executable(32768, L'\0');
+        const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+        if (!length || length >= executable.size()) throw std::runtime_error("Cannot locate registry helper executable");
+        executable.resize(length);
+        const auto parameters = std::wstring(restore ? L"--x52-power-restore \"" : L"--x52-power-disable \"") + powerDevice->instance + L"\"";
+        SHELLEXECUTEINFOW launch{sizeof(launch)}; launch.fMask = SEE_MASK_NOCLOSEPROCESS; launch.hwnd = window;
+        launch.lpVerb = L"runas"; launch.lpFile = executable.c_str(); launch.lpParameters = parameters.c_str(); launch.nShow = SW_HIDE;
+        if (!ShellExecuteExW(&launch)) {
+            if (GetLastError() == ERROR_CANCELLED) { powerResult = L"Administrator approval was cancelled. No registry change was applied."; RefreshPower(); return; }
+            throw WindowsException("Start administrator helper", GetLastError());
+        }
+        powerProcess = std::make_unique<UniqueHandle>(launch.hProcess);
+        powerResult = L"Applying the requested value and verifying registry readback...";
+        EnableIfChanged(Item(PowerRefresh), false); RefreshPower();
+    }
+    void PollPower()
+    {
+        if (page == 6 && !powerTried) RefreshPower();
+        if (!powerProcess || WaitForSingleObject(powerProcess->get(), 0) != WAIT_OBJECT_0) return;
+        DWORD code = 1; GetExitCodeProcess(powerProcess->get(), &code); powerProcess.reset();
+        powerResult = code == 0 ? L"Registry value verified. Reconnect the X52 to the same USB port, or restart Windows, before testing.\r\nThis is a power-management experiment; dropout improvement is not yet verified." :
+            L"The change did not complete. Review the helper error and current registry value before retrying.";
+        EnableIfChanged(Item(PowerRefresh), true); RefreshPower();
+    }
     bool Checked(int id) const { return SendMessageW(Item(id), BM_GETCHECK, 0, 0) == BST_CHECKED; }
     void Check(int id, bool value) { if (Checked(id) != value) SendMessageW(Item(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
     void MfdEnabled(bool enabled)
@@ -249,7 +301,7 @@ struct Application {
         Add(L"BUTTON", L"Identify input...", IdentifySelected, -1, 730, 129, 246, 32, WS_TABSTOP);
         int i = 0;
         for (const auto label : PageNames) {
-            const auto nav = Add(L"BUTTON", label, NavigationBase + i, -1, 36, 184 + i * 46, 224, 44, WS_TABSTOP);
+            const auto nav = Add(L"BUTTON", label, NavigationBase + i, -1, 36, 184 + i * 42, 224, 40, WS_TABSTOP);
             SetPropW(nav, L"X52.Navigation", reinterpret_cast<HANDLE>(1));
             if (i++ == 0) SetPropW(nav, L"X52.Selected", reinterpret_cast<HANDLE>(1));
         }
@@ -300,24 +352,24 @@ struct Application {
             ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | WS_HSCROLL | WS_VSCROLL | WS_TABSTOP, true, true);
         Add(L"BUTTON", L"Import Battlefield 3", ImportBF3, 4, 24, 220, 180, 30, WS_TABSTOP);
         Add(L"BUTTON", L"Import Battlefield 4", ImportBF4, 4, 216, 220, 180, 30, WS_TABSTOP);
-        Add(L"STATIC", L"Reads your Documents settings; keeps analogue axes in the game.", 0, 4, 415, 224, 560, 25, 0, true);
+        Add(L"STATIC", L"Imports joystick / joypad bindings from your saved game settings.", 0, 4, 415, 224, 560, 25, 0, true);
         Add(L"STATIC", L"X52 mode", 0, 4, 24, 260, 210, 23);
         Add(L"COMBOBOX", L"", ProfileMode, 4, 24, 283, 270, 220, CBS_DROPDOWNLIST | WS_TABSTOP);
-        FillCombo(ProfileMode, {L"Mode 1 (base)", L"Mode 2 (inherits Mode 1)", L"Mode 3 (inherits Mode 1)",
+        FillCombo(ProfileMode, {L"Mode 1", L"Mode 2", L"Mode 3",
             L"Mode 1 + Pinkie", L"Mode 2 + Pinkie", L"Mode 3 + Pinkie"});
-        Add(L"STATIC", L"Physical button (manufacturer names)", 0, 4, 310, 260, 650, 23);
+        Add(L"STATIC", L"Identified physical X52 control / HID link", 0, 4, 310, 260, 650, 23);
         Add(L"COMBOBOX", L"", ProfileControl, 4, 310, 283, 666, 300, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL, true);
         Add(L"STATIC", L"Game context", 0, 4, 24, 320, 155, 23);
         Add(L"COMBOBOX", L"", ProfileContext, 4, 24, 344, 155, 220, CBS_DROPDOWNLIST | WS_TABSTOP);
-        Add(L"STATIC", L"Existing Battlefield command / key", 0, 4, 191, 320, 570, 23);
+        Add(L"STATIC", L"Existing Battlefield joystick / joypad binding", 0, 4, 191, 320, 570, 23);
         Add(L"COMBOBOX", L"", ProfileActionChoice, 4, 191, 344, 570, 360, CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL);
         Add(L"BUTTON", L"Assign / replace", AddProfileMapping, 4, 777, 341, 199, 30, WS_TABSTOP);
         Add(L"LISTBOX", L"", ProfileMappingList, 4, 24, 391, 952, 173,
             LBS_NOINTEGRALHEIGHT | WS_BORDER | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, true);
         SendMessageW(Item(ProfileMappingList), LB_SETHORIZONTALEXTENT, MulDiv(1350, dpi, 96), 0);
         Add(L"BUTTON", L"Remove selected override", RemoveProfileMapping, 4, 24, 576, 230, 30, WS_TABSTOP);
-        Add(L"BUTTON", L"Export .pr0 draft", ExportPr0, 4, 752, 576, 224, 30, WS_TABSTOP);
-        Add(L"STATIC", L"Import a game, select a mode/button and an existing command. Hats/axis programming is not exported yet.\r\nUnassigned controls retain Logitech defaults; removing an override restores mode inheritance.", ProfileInfo, 4, 24, 619, 952, 63, 0, true);
+        Add(L"BUTTON", L"Export joystick plan", ExportPr0, 4, 752, 576, 224, 30, WS_TABSTOP);
+        Add(L"STATIC", L"Import BF3 or BF4 to see saved joystick buttons, axes and inversion. Choose an identified X52 control.\r\nAssignments are saved as a mapping plan; joystick output and PR0 joystick export are not implemented.", ProfileInfo, 4, 24, 619, 952, 63, 0, true);
         for (const auto item : {ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice, AddProfileMapping, RemoveProfileMapping, ExportPr0}) EnableWindow(Item(item), FALSE);
         Add(L"STATIC", L"X52 device settings", 0, 5, 24, 220, 500, 24);
         Add(L"BUTTON", L"Refresh from X52", MfdRefresh, 5, 752, 215, 224, 30, WS_TABSTOP);
@@ -350,6 +402,13 @@ struct Application {
         Add(L"BUTTON", L"Save input filtering", FilterApply, 0, 752, 616, 224, 30, WS_TABSTOP);
         Add(L"STATIC", L"Filters smooth Normalized and Safe internal values here. Raw readings stay unchanged; direct game input is unaffected.", 0, 0, 24, 662, 952, 27, 0, true);
         MfdEnabled(false);
+        Add(L"STATIC", L"Original X52 - USB power management", 0, 6, 24, 220, 952, 26);
+        Add(L"STATIC", L"Applies only to the connected X52 USB instance (06A3:075C). Other devices and global power settings stay unchanged.\r\nWindows administrator approval is required to apply or restore. Opening this page only reads the registry.", 0, 6, 24, 260, 952, 55, 0, true);
+        Add(L"EDIT", L"", PowerInfo, 6, 24, 330, 952, 255, ES_MULTILINE | ES_READONLY | WS_VSCROLL, true, true);
+        Add(L"BUTTON", L"Refresh registry", PowerRefresh, 6, 24, 610, 230, 32, WS_TABSTOP);
+        Add(L"BUTTON", L"Disable for this X52", PowerDisable, 6, 270, 610, 285, 32, WS_TABSTOP);
+        Add(L"BUTTON", L"Restore original value", PowerRestore, 6, 573, 610, 300, 32, WS_TABSTOP);
+        EnableIfChanged(Item(PowerDisable), false); EnableIfChanged(Item(PowerRestore), false);
         footer = Add(L"STATIC", L"", 0, -1, 36, 707, 1200, 36, 0, true);
         Fonts();
         DEV_BROADCAST_DEVICEINTERFACE_W filter{};
@@ -376,6 +435,7 @@ struct Application {
             const auto action = std::find(actions.begin(), actions.end(), id);
             if (action != actions.end()) { x = 36; y = 504 + static_cast<int>(action - actions.begin()) * 36; w = 224; }
             if (child.handle == footer || id == 711 || (child.page == 0 && child.y >= 474)) y += extraY;
+            if (child.page == 6 && child.y >= 610) y += extraY;
             if (!MoveWindow(child.handle, MulDiv(x, dpi, 96), MulDiv(y, dpi, 96),
                 MulDiv(std::max(1, w + (child.stretchX ? extraX : 0)), dpi, 96),
                 MulDiv(std::max(1, child.h + (child.stretchY ? extraY : 0)), dpi, 96), TRUE))
@@ -394,6 +454,7 @@ struct Application {
         }
         EnableIfChanged(Item(FilterApply), filterUiLoaded);
         PollMfd();
+        PollPower();
         SetText(status, (last.connected ? L"CONNECTED   |   " : L"NOT CONNECTED   |   ") + last.device +
             L"   |   Reports: " + std::to_wstring(last.sequence));
         SetText(footer, Wide(last.error.empty() ? last.status : "ERROR: " + last.error));
@@ -513,6 +574,9 @@ struct Application {
             SetText(title, PageNames[static_cast<std::size_t>(page)]); Layout(); Poll(); return;
         }
         switch (id) {
+        case PowerRefresh: powerResult.clear(); RefreshPower(); break;
+        case PowerDisable: ChangePower(false); break;
+        case PowerRestore: ChangePower(true); break;
         case MfdRefresh: StartMfd(); break;
         case MfdClutch: StartMfd({{MfdOption::Clutch, Checked(id)}}); break;
         case MfdLatched: StartMfd({{MfdOption::Latched, Checked(id)}}); break;
@@ -577,16 +641,18 @@ struct Application {
             throw std::runtime_error("Cannot populate profile selector");
         SendMessageW(Item(id), CB_SETCURSEL, 0, 0);
     }
-    std::filesystem::path ProfileDraftPath() const { return service.directory() / (L"bf" + std::to_wstring(profileGame) + L"-authoring.json"); }
+    std::filesystem::path ProfileDraftPath() const { return service.directory() / (L"bf" + std::to_wstring(profileGame) + L"-joystick-authoring.json"); }
     void LoadBattlefield(int game)
     {
         for (const auto item : {ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice, AddProfileMapping, RemoveProfileMapping, ExportPr0}) EnableWindow(Item(item), FALSE);
-        SetText(Item(ProfileInfo), L"Importing saved bindings and the installed X52 template...");
-        auto bindings = ReadBattlefieldBindings(BattlefieldSettingsPath(game));
-        auto base = ReadX52Template(InstalledX52TemplatePath());
-        auto buttons = ProfileButtons(base);
-        // Read-only imports: game settings and vendor template are never modified.
-        profileGame = game; battlefieldBindings = std::move(bindings); profileTemplate = std::move(base); profileButtons = std::move(buttons);
+        SetText(Item(ProfileInfo), L"Importing saved joystick / joypad bindings...");
+        auto bindings = JoystickBindings(ReadBattlefieldBindings(BattlefieldSettingsPath(game)));
+        if (bindings.empty()) throw std::runtime_error("No joystick / joypad bindings were found in this game's saved settings");
+        std::vector<ProfileButton> controls;
+        for (const auto& [id, learned] : service.Read().assignments)
+            controls.push_back({id, learned.name + " [" + id + "]"});
+        // Game settings are read-only. Physical inputs come from the user's HID links.
+        profileGame = game; battlefieldBindings = std::move(bindings); profileButtons = std::move(controls);
         profileMappings.clear();
         unsigned unresolved{};
         if (std::filesystem::exists(ProfileDraftPath())) {
@@ -596,14 +662,17 @@ struct Application {
                 if (depth > 16) throw std::runtime_error("Profile draft is too deeply nested");
                 return true;
             });
-            if (draft.at("schema") != 1 || draft.at("game") != game) throw std::runtime_error("Invalid profile draft schema/game");
+            if (draft.at("schema") != 1 || draft.at("game") != game || draft.at("input_source") != "battlefield_joystick")
+                throw std::runtime_error("Invalid joystick plan schema/game/source");
             std::set<std::pair<int, std::string>> used;
             for (const auto& item : draft.at("mappings")) {
                 const auto mode = item.at("mode").get<int>(); const auto control = item.at("control").get<std::string>();
                 const auto bindingId = item.at("binding").get<std::string>();
                 const auto binding = std::find_if(battlefieldBindings.begin(), battlefieldBindings.end(), [&](const auto& value) { return value.id == bindingId; });
                 const auto button = std::find_if(profileButtons.begin(), profileButtons.end(), [&](const auto& value) { return value.id == control; });
-                if (mode < 0 || mode >= 6 || button == profileButtons.end() || binding == battlefieldBindings.end() || !ProfileOutput(*binding) || !used.emplace(mode, control).second) { ++unresolved; continue; }
+                if (mode < 0 || mode >= 6 || button == profileButtons.end() || binding == battlefieldBindings.end() ||
+                    (JoystickKind(*binding) != JoystickBindingKind::Button && JoystickKind(*binding) != JoystickBindingKind::Axis) ||
+                    !used.emplace(mode, control).second) { ++unresolved; continue; }
                 profileMappings.push_back({mode, control, *binding});
             }
         }
@@ -614,26 +683,29 @@ struct Application {
         for (const auto& binding : battlefieldBindings) contexts.insert(binding.context);
         names = {L"All contexts"}; for (const auto& context : contexts) names.push_back(Wide(context));
         FillCombo(ProfileContext, names); FilterProfileActions(); RefreshProfileMappings();
-        for (const auto item : {ProfileMode, ProfileControl, ProfileContext, ProfileActionChoice, AddProfileMapping, RemoveProfileMapping, ExportPr0}) EnableWindow(Item(item), TRUE);
+        for (const auto item : {ProfileMode, ProfileContext, ProfileActionChoice}) EnableWindow(Item(item), TRUE);
+        for (const auto item : {ProfileControl, AddProfileMapping, RemoveProfileMapping, ExportPr0}) EnableWindow(Item(item), !profileButtons.empty());
+        const auto axes = std::count_if(battlefieldBindings.begin(), battlefieldBindings.end(), [](const auto& binding) { return JoystickKind(binding) == JoystickBindingKind::Axis; });
+        const auto unassigned = std::count_if(battlefieldBindings.begin(), battlefieldBindings.end(), [](const auto& binding) { return JoystickKind(binding) == JoystickBindingKind::Unassigned; });
         SetText(Item(ProfileInfo), L"BF" + std::to_wstring(game) + L": imported " + std::to_wstring(battlefieldBindings.size()) +
-            L" binding records. Export supports keyboard / left-right mouse commands on buttons. Axes stay in Battlefield.\r\n" +
+            L" joystick records (" + std::to_wstring(axes) + L" axes, " + std::to_wstring(unassigned) + L" unassigned). " +
+            std::to_wstring(profileButtons.size()) + L" identified X52 inputs.\r\n" +
             (unresolved ? std::to_wstring(unresolved) + L" saved overrides need reassignment. " : L"") +
-            L"Pinkie stays reserved for shifting. To use I, turn off Logitech profile selection in MFD & LEDs. Hats are not exported yet.");
+            (profileButtons.empty() ? L"Identify physical controls on Live inputs, then reimport. " : L"") +
+            L"Plan only: joystick output / PR0 joystick export are not implemented. Codes are Battlefield IDs, not HID button numbers.");
     }
     void FilterProfileActions()
     {
         const auto selected = Utf8(Text(Item(ProfileContext)));
         actionChoices.clear(); std::vector<std::wstring> labels;
-        for (const auto& binding : battlefieldBindings) if (ProfileOutput(binding) && (selected == "All contexts" || binding.context == selected)) {
+        for (const auto& binding : battlefieldBindings) if (binding.type == 2 && (selected == "All contexts" || binding.context == selected)) {
             actionChoices.push_back(binding); labels.push_back(BindingLabel(binding));
         }
         FillCombo(ProfileActionChoice, labels);
     }
     void SaveProfileDraft()
     {
-        Json overrides = Json::array();
-        for (const auto& mapping : profileMappings) overrides.push_back({{"mode", mapping.mode}, {"control", mapping.control}, {"binding", mapping.binding.id}});
-        WriteJson(ProfileDraftPath(), {{"schema", 1}, {"game", profileGame}, {"mappings", overrides}});
+        WriteJson(ProfileDraftPath(), BuildJoystickPlan(profileGame, profileMappings));
     }
     void RefreshProfileMappings()
     {
@@ -651,7 +723,10 @@ struct Application {
         const auto button = SendMessageW(Item(ProfileControl), CB_GETCURSEL, 0, 0);
         const auto action = SendMessageW(Item(ProfileActionChoice), CB_GETCURSEL, 0, 0);
         if (mode < 0 || button < 0 || action < 0 || static_cast<std::size_t>(button) >= profileButtons.size() || static_cast<std::size_t>(action) >= actionChoices.size())
-            throw std::runtime_error("Select a mode, physical button and Battlefield command");
+            throw std::runtime_error("Select a mode, identified X52 control and Battlefield joystick binding");
+        const auto kind = JoystickKind(actionChoices[static_cast<std::size_t>(action)]);
+        if (kind != JoystickBindingKind::Axis && kind != JoystickBindingKind::Button)
+            throw std::runtime_error("This joystick entry is unassigned or has an unknown encoding. Choose an assigned button or axis");
         const auto& control = profileButtons[static_cast<std::size_t>(button)].id;
         std::erase_if(profileMappings, [&](const auto& row) { return row.mode == mode && row.control == control; });
         profileMappings.push_back({mode, control, actionChoices[static_cast<std::size_t>(action)]});
@@ -659,19 +734,12 @@ struct Application {
     }
     void ExportProfile()
     {
-        const auto name = "Battlefield " + std::to_string(profileGame) + " X52 draft";
-        const auto built = BuildBattlefieldPr0(profileTemplate, profileMappings, name);
-        (void)ParsePr0(SerializePr0(built));
-        const auto text = EncodePr0(built);
+        if (profileMappings.empty()) throw std::runtime_error("Assign at least one joystick mapping before exporting");
         const auto directory = service.directory() / L"profiles"; std::filesystem::create_directories(directory);
-        const auto file = directory / (L"BF" + std::to_wstring(profileGame) + L"-X52-" + std::to_wstring(Qpc()) + L".pr0");
-        const auto temporary = file.wstring() + L".tmp";
-        { std::ofstream stream(temporary, std::ios::binary); stream.write(text.data(), static_cast<std::streamsize>(text.size())); stream.close();
-          if (!stream) throw std::runtime_error("Could not write profile draft"); }
-        if (!MoveFileExW(temporary.c_str(), file.c_str(), MOVEFILE_WRITE_THROUGH)) throw WindowsException("Publish profile draft", GetLastError());
-        SetText(Item(ProfileInfo), L"Exported: " + file.wstring() + L"\r\nOpen this draft in Logitech's profiler and test it before activating. It has not been loaded or written to joystick memory.");
-        if (std::any_of(profileMappings.begin(), profileMappings.end(), [](const auto& mapping) { return mapping.control == "0x0009001E"; }))
-            SetText(Item(ProfileInfo), L"Exported: " + file.wstring() + L"\r\nThis profile uses I. Turn off 'Use I for Logitech profile selection' in MFD & LEDs before using it. Profile not activated.");
+        const auto file = directory / (L"BF" + std::to_wstring(profileGame) + L"-X52-joystick-" + std::to_wstring(Qpc()) + L".json");
+        WriteJson(file, BuildJoystickPlan(profileGame, profileMappings));
+        SetText(Item(ProfileInfo), L"Exported joystick mapping plan: " + file.wstring() +
+            L"\r\nThis JSON preserves Battlefield's joystick bindings. It is not an active controller profile or a Logitech PR0 file.");
         if (reinterpret_cast<INT_PTR>(ShellExecuteW(window, L"open", directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
             throw std::runtime_error("Profile saved, but its folder could not be opened");
     }
@@ -760,6 +828,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
 {
     try {
+        int count{};
+        struct Arguments { LPWSTR* value{}; ~Arguments() { if (value) LocalFree(value); } } args{CommandLineToArgvW(GetCommandLineW(), &count)};
+        if (!args.value) throw WindowsException("Read command line", GetLastError());
+        if (count > 1) {
+            const std::wstring_view operation(args.value[1]);
+            if (count != 3 || (operation != L"--x52-power-disable" && operation != L"--x52-power-restore"))
+                throw std::runtime_error("Unsupported command line");
+            ChangeX52Power(DefaultDataDirectory(), args.value[2], operation == L"--x52-power-restore");
+            return 0;
+        }
         INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES | ICC_BAR_CLASSES};
         if (!InitCommonControlsEx(&controls)) throw WindowsException("InitCommonControlsEx", GetLastError());
         Application app;

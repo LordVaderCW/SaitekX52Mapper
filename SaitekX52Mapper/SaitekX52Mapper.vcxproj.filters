@@ -145,6 +145,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\src\device\MfdSettings.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\device\PowerManagement.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="..\src\device\PowerManagement.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\device\MfdSettings.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClInclude Include="..\src\input\AxisFilter.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="..\src\ui\BattlefieldTheme.cpp"><Filter>Source Files</Filter></ClCompile>

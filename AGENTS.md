@@ -15,6 +15,11 @@ repeatable captures. No output/feature writes until a legitimate PS28 command is
 The user also authorized MFD/LED/clutch settings on 2026-09-21. The bounded
 Logitech 8.0.116.0 driver settings adapter is documented in docs/mfd-settings.md;
 keep version/identity checks and readback. Do not extrapolate USB or Pro commands.
+The user authorized an X52-specific EnhancedPowerManagementEnabled registry
+option on 2026-09-22. Restrict it to present USB VID_06A3/PID_075C instances,
+preserve the original value, use normal administrator approval and verify readback.
+No broad registry tweaks, automatic USB resets, power-plan changes or permission
+changes are included in that authorization.
 
 No injection, hooks, game patches, anti-cheat interference, service restarts, USB
 disable/enable or driver installation. Software reopen is not an electrical reset.

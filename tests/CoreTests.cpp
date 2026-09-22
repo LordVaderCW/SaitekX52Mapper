@@ -10,6 +10,7 @@
 #include <stdexcept>
 void ScrollbarTests();
 void ThemeTests();
+void PowerManagementTests();
 
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -17,6 +18,7 @@ void Tests()
 {
     ScrollbarTests();
     ThemeTests();
+    PowerManagementTests();
     using namespace x52;
     {
         std::wstring executable(32768, L'\0');
@@ -209,6 +211,46 @@ void Tests()
     bool badBinding = false;
     try { (void)ReadBattlefieldBindings(battlefieldFile); } catch (const std::exception&) { badBinding = true; }
     Require(badBinding, "duplicate Battlefield fields are rejected");
+    {
+        const std::vector<BattlefieldBinding> source{
+            {"jet.ConceptFire.0", "jet", "ConceptFire", 0, 0, 57, 0, 0},
+            {"jet.ConceptFire.1", "jet", "ConceptFire", 1, 1, 0, 24, 0},
+            {"jet.ConceptFire.2", "jet", "ConceptFire", 2, 2, 0, 24, 0},
+            {"jet.ConceptPitch.3", "jet", "ConceptPitch", 3, 2, 60, 7, 1},
+            {"jet.ConceptZoom.2", "jet", "ConceptZoom", 2, 2, 60, 24, 0},
+            {"jet.Unknown.0", "jet", "Unknown", 0, 2, 999, 99, 0}};
+        { std::ofstream stream(battlefieldFile);
+          for (const auto& binding : source) {
+              const auto prefix = "GstKeyBinding." + binding.id;
+              stream << prefix << ".type " << binding.type << '\n' << prefix << ".axis " << binding.axis << '\n'
+                  << prefix << ".button " << binding.button << '\n' << prefix << ".negate " << binding.negate << '\n';
+          } }
+        const auto joy = JoystickBindings(ReadBattlefieldBindings(battlefieldFile));
+        Require(joy.size() == 4 && std::all_of(joy.begin(), joy.end(), [](const auto& binding) { return binding.type == 2; }),
+            "joystick view excludes keyboard/mouse without dropping unassigned/unknown joystick records");
+        Require(JoystickKind(source[2]) == JoystickBindingKind::Button && JoystickKind(source[3]) == JoystickBindingKind::Axis &&
+            JoystickKind(source[4]) == JoystickBindingKind::Unassigned && JoystickKind(source[5]) == JoystickBindingKind::Unknown,
+            "button 60 is an axis sentinel only when the axis is assigned");
+        Require(BindingLabel(source[2]).find(L"Joy button code 0") != std::wstring::npos &&
+            BindingLabel(source[3]).find(L"Joy axis 7 (inverted)") != std::wstring::npos &&
+            BindingLabel(source[4]).find(L"Unassigned") != std::wstring::npos,
+            "joystick labels preserve zero button, axis and inversion without guessing physical names");
+        const std::vector<ProfileMapping> mappings{{0, "r0:p9:u1:l1", source[2]}, {0, "r0:p1:u31:l1", source[3]}};
+        const auto plan = BuildJoystickPlan(4, mappings);
+        Require(plan.at("input_source") == "battlefield_joystick" && !plan.at("runtime_output_implemented").get<bool>() &&
+            plan.at("mappings")[1].at("axis") == 7 && plan.at("mappings")[1].at("negate") == 1 &&
+            plan.at("mappings")[1].at("control") == "r0:p1:u31:l1", "joystick plans retain exact game encodings and learned HID identity");
+        for (const auto index : {0u, 1u, 4u, 5u}) {
+            bool rejected = false;
+            try { (void)BuildJoystickPlan(4, {{0, "r0:p9:u1:l1", source[index]}}); } catch (const std::exception&) { rejected = true; }
+            Require(rejected, "keyboard/mouse, unbound and unknown outputs cannot enter a joystick mapping plan");
+        }
+        auto duplicate = mappings; duplicate.push_back(mappings.front());
+        bool rejected = false;
+        try { (void)BuildJoystickPlan(4, duplicate); } catch (const std::exception&) { rejected = true; }
+        Require(rejected, "joystick plans reject duplicate mode/control pairs");
+        Require(BuildJoystickPlan(3, {}).at("mappings").empty(), "removing final joystick mapping leaves valid empty authoring plan");
+    }
     const auto minimalProfile = ParsePr0("[profile='Test spaces' version=5 [commands [actioncommand=sample [actionblock [action device=keyboard usage=44 page=7 value=1]]]]]");
     Require(SerializePr0(ParsePr0(SerializePr0(minimalProfile))) == SerializePr0(minimalProfile), "PR0 parser and serializer retain nested commands and quoting");
     for (const auto& invalid : {std::string("[profile='unclosed]"), std::string("[profile=x] trailing"), std::string(40, '[')}) {
@@ -328,6 +370,24 @@ int main(int argc, char** argv)
                     (void)x52::SetMfdOption(paths.front(), option, values[i]);
                     std::cout << "Setting " << i << " changed, read back, restored and read back\n";
                 }
+            }
+        }
+        if (argc > 1 && std::string(argv[1]) == "--joystick-profiles") {
+            for (const auto game : {3, 4}) {
+                const auto bindings = x52::JoystickBindings(x52::ReadBattlefieldBindings(x52::BattlefieldSettingsPath(game)));
+                Require(!bindings.empty(), "local game contains joystick bindings");
+                const auto fire = std::find_if(bindings.begin(), bindings.end(), [](const auto& entry) {
+                    return entry.context == "jet" && entry.action == "ConceptFire" && x52::JoystickKind(entry) == x52::JoystickBindingKind::Button;
+                });
+                const auto pitch = std::find_if(bindings.begin(), bindings.end(), [](const auto& entry) {
+                    return entry.context == "jet" && entry.action == "ConceptPitch" && x52::JoystickKind(entry) == x52::JoystickBindingKind::Axis;
+                });
+                Require(fire != bindings.end() && pitch != bindings.end(), "local jet fire and pitch joystick bindings imported");
+                const auto plan = x52::BuildJoystickPlan(game, {{0, "r0:p9:u1:l1", *fire}, {0, "r0:p1:u31:l1", *pitch}});
+                Require(plan.at("mappings")[0].at("type") == 2 && plan.at("mappings")[1].at("axis") == pitch->axis,
+                    "local joystick plan preserves source device and axis");
+                std::cout << "BF" << game << ": " << bindings.size() << " joystick records; jet Fire code " << fire->button
+                    << ", Pitch axis " << pitch->axis << ", negate " << pitch->negate << " (read-only import)\n";
             }
         }
         if (argc > 1 && std::string(argv[1]) == "--profiles") {

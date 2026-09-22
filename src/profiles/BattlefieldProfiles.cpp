@@ -129,16 +129,64 @@ std::optional<ProfileAction> ProfileOutput(const BattlefieldBinding& binding)
         return ProfileAction{"mouse", static_cast<unsigned>(binding.button + 1), 9};
     return std::nullopt; // Unbound, joystick axes and unproven mouse encodings stay untouched.
 }
+JoystickBindingKind JoystickKind(const BattlefieldBinding& binding)
+{
+    if (binding.type != 2) return JoystickBindingKind::NotJoystick;
+    if (binding.negate != 0 && binding.negate != 1) return JoystickBindingKind::Unknown;
+    if (binding.axis == 24 && binding.button == 60) return JoystickBindingKind::Unassigned;
+    if (binding.axis >= 0 && binding.axis < 24 && binding.button == 60) return JoystickBindingKind::Axis;
+    // Battlefield's button codes include directional inputs. They are not HID
+    // usage numbers and must not be relabelled as physical X52 buttons/hats.
+    if (binding.axis == 24 && binding.button >= 0 && binding.button < 60) return JoystickBindingKind::Button;
+    return JoystickBindingKind::Unknown;
+}
+std::vector<BattlefieldBinding> JoystickBindings(const std::vector<BattlefieldBinding>& bindings)
+{
+    std::vector<BattlefieldBinding> result;
+    for (const auto& binding : bindings) if (binding.type == 2) result.push_back(binding);
+    return result;
+}
+Json BuildJoystickPlan(int game, const std::vector<ProfileMapping>& mappings)
+{
+    if (game != 3 && game != 4) throw std::runtime_error("Choose Battlefield 3 or 4");
+    Json entries = Json::array();
+    std::set<std::pair<int, std::string>> used;
+    for (const auto& mapping : mappings) {
+        const auto kind = JoystickKind(mapping.binding);
+        if (mapping.mode < 0 || mapping.mode >= 6 || mapping.control.empty() ||
+            (kind != JoystickBindingKind::Axis && kind != JoystickBindingKind::Button) ||
+            !used.emplace(mapping.mode, mapping.control).second)
+            throw std::runtime_error("Joystick plan requires unique X52 inputs and assigned joystick bindings");
+        const auto& binding = mapping.binding;
+        entries.push_back({{"mode", mapping.mode}, {"control", mapping.control}, {"binding", binding.id},
+            {"context", binding.context}, {"action", binding.action}, {"slot", binding.slot},
+            {"type", binding.type}, {"axis", binding.axis}, {"button", binding.button}, {"negate", binding.negate}});
+    }
+    return {{"schema", 1}, {"game", game}, {"input_source", "battlefield_joystick"},
+        {"control_identity", "learned_hid_report_link"}, {"runtime_output_implemented", false}, {"mappings", entries}};
+}
 std::wstring BindingLabel(const BattlefieldBinding& binding)
 {
     auto label = Wide(binding.context + " / " + binding.action + " [" + std::to_string(binding.slot) + "]");
+    if (binding.type == 2) {
+        switch (JoystickKind(binding)) {
+        case JoystickBindingKind::Button: label += L" - Joy button code " + std::to_wstring(binding.button); break;
+        case JoystickBindingKind::Axis: label += L" - Joy axis " + std::to_wstring(binding.axis); break;
+        case JoystickBindingKind::Unassigned: label += L" - Unassigned"; break;
+        default: label += L" - Unknown joystick encoding"; break;
+        }
+        if (binding.negate == 1) label += L" (inverted)";
+        return label + L" {axis=" + std::to_wstring(binding.axis) + L", button=" + std::to_wstring(binding.button) +
+            L", negate=" + std::to_wstring(binding.negate) + L"}";
+    }
     if (binding.type == 0) {
         wchar_t name[96]{};
         const auto code = (static_cast<unsigned>(binding.button) & 0x7f) << 16;
         const auto extended = binding.button >= 128 ? 1u << 24 : 0u;
         if (GetKeyNameTextW(static_cast<LONG>(code | extended), name, 96)) label += L" - " + std::wstring(name);
         else label += L" - scan " + std::to_wstring(binding.button);
-    } else label += binding.button == 0 ? L" - Left mouse" : L" - Right mouse";
+    } else if (binding.type == 1) label += L" - Mouse {axis=" + std::to_wstring(binding.axis) + L", button=" + std::to_wstring(binding.button) + L"}";
+    else label += L" - Unknown input type " + std::to_wstring(binding.type);
     return label;
 }
 Pr0Node ParsePr0(std::string_view text)

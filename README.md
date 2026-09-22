@@ -10,6 +10,9 @@ Press **F5** to build and debug, or **Ctrl+F5** to run without debugging.
 If Visual Studio detects external project changes, reload them. The executable is
 `out/x64/Release/SaitekX52Mapper.exe` (or the corresponding Debug folder).
 
+Dependency and packaged application installers belong in [dist](dist/README.md).
+It includes the preserved `X52_HOTAS_x64_8_0_213_0.exe` vendor package and its checksum.
+
 From a Visual Studio developer PowerShell:
 
 ```powershell
@@ -47,11 +50,12 @@ Normal operation does not write unchanged reports to disk. See
 [the capture procedure](docs/x52-dropout-analysis.md) and [troubleshooting](docs/troubleshooting.md).
 
 The **Battlefield profiles** page imports your BF3/BF4 settings from Documents.
-Choose a mode, physical button and existing command, then Assign / replace.
-Export .pr0 draft writes a new profile for review in Logitech's profiler. Authoring
-selections persist separately from the games. The first version supports keyboard
-and left/right mouse commands on buttons; analogue axes stay in Battlefield and
-hats are not exported yet. See [profile workflow](docs/profile-authoring.md).
+It shows joystick/joypad bindings only: button codes, axes, inversion and unassigned
+entries. Choose a mode, an identified X52 input and an assigned joystick binding,
+then Assign / replace. **Export joystick plan** saves a JSON plan with the exact
+Battlefield fields and learned HID links. Plans are not active controller profiles;
+joystick output and PR0 joystick export are not implemented. Existing keyboard
+drafts remain separate. See [profile workflow](docs/profile-authoring.md).
 
 The **MFD & LEDs** page controls the installed original X52 driver's clutch,
 latched clutch, MFD backlight, button LEDs, brightness and three clock formats.
@@ -61,8 +65,14 @@ rotaries and thumb slider. Raw captures stay intact; normalized and safe interna
 values receive jitter suppression plus smoothing. Defaults: 45 ms, one raw count.
 See [MFD settings and filtering](docs/mfd-settings.md).
 
+The **Registry tweaks** page reads the original X52's USB enhanced-power setting.
+It can set `EnhancedPowerManagementEnabled` to `0` with Windows administrator
+approval, preserving and restoring the original value in the local data folder.
+This is a device-specific dropout experiment, not a confirmed fix. See
+[power-management behaviour and sources](docs/power-management.md).
+
 **No independent game-output runtime or virtual controller is implemented.**
-Logitech's installed software is responsible for activating exported profiles.
+Joystick plans cannot be activated in Logitech's profiler.
 No hooks, injection, game modifications, anti-cheat interference, raw HID output/feature writes or
 driver installation. Software reopen is not an electrical joystick reset.
 

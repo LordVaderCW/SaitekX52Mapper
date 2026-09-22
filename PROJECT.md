@@ -425,3 +425,103 @@ legacy-folder deletion and a narrower cleanup of only hash-verified duplicate
 files followed by empty-folder removal (blocked by policy; no specific reason).
 The old C:/Users/KingJamesIX/AppData/Local/X52BattlefieldMapper folder remains as
 a duplicate and is no longer used by the rebuilt application. No deletion occurred.
+
+## Brightness redraw and resized backgrounds - 2026-09-21
+
+Fixed live brightness readbacks repeatedly disabling/re-enabling MFD controls,
+resetting unchanged checks/selections and alternating status text. State updates
+are now conditional. Known settings remain editable during an asynchronous write;
+other edits are serialized/coalesced by option, refresh requests are deferred,
+and pending user edits are not overwritten by older readbacks. Driver operations
+retain the existing identity/version checks, single-operation serialization and
+brightness coalescing. Initial unavailable settings and errors still disable edits.
+
+Themed buttons now use BS_OWNERDRAW so synchronous native state drawing also
+reaches the themed renderer. Checkbox state and BN_CLICKED toggling are preserved
+explicitly. Trackbar NM_CUSTOMDRAW suppresses default drawing as well. No-op check,
+combo selection and slider-position updates avoid invalidation. Parent and child
+backdrops share the same full-resolution raster. Resize regenerates that raster
+before positioning/repainting children, and invalidates children only as part of
+layout/background changes. Labels, checkbox surfaces and slider backgrounds blend
+with the parent; fields and action buttons retain intentional panel fills.
+
+Debug/Release solution builds and core tests passed. New ThemeTests cover 200
+repeated unchanged updates without invalidation, checkbox activation/disabled
+behavior, owner drawing, trackbar custom draw and pixel-aligned backgrounds across
+three window sizes. Actual Debug app drag verification sent 30 native mouse moves
+while maximized, then restored the window. Zero enabled-state changes in unrelated
+MFD controls. Eight sampled UI regions (checks, refresh, clocks and explanatory
+text) had zero changed pixels before versus during drag. Client-DC screenshots
+avoid PrintWindow repainting away the issue under test. Inspected maximized and
+restored captures. LED brightness started at 10 percent, varied during testing,
+and was restored to 10 with a fresh driver readback. Other device settings were
+not changed. Original Visual Studio Debug project remains running.
+
+## Dependency installer archive - 2026-09-21
+
+Created repository dist directory for vendor/dependency EXEs and future mapper
+application installers. Copied the exact Downloads X52_HOTAS_x64_8_0_213_0.exe
+(15,991,736 bytes). Source and destination SHA-256 match:
+1661874a7aedaf610d230271aa37d037bab501a208ae875b47f012e6d81e9c1d.
+Windows Authenticode reports Valid with Logitech Inc as signer. The executable's
+9.20 version metadata belongs to its 7-Zip wrapper; no driver-component version
+was inferred. Installer was neither executed nor modified. Added dist README and
+SHA256SUMS, a root README link, and binary Git attributes for dist EXEs. No other
+runtime installers or mapper installation package have been added yet.
+Debug/Release solution builds and core tests passed; dist is not Git-ignored.
+
+## Joystick-only Battlefield editor - 2026-09-21
+
+User explicitly selected joystick view only. The importer previously parsed all
+bindings, but the UI gated its action selector on keyboard/mouse PR0 output. The
+page now filters device type 2 records and shows numeric joystick button codes,
+axes, inversion, unassigned records and unknown encodings. Input choices come from
+all saved physical HID identification links (including hats and axes), rather than
+only the vendor PR0 button catalog. Battlefield numeric button/direction codes
+are not assumed to be physical X52 HID usages. Axis=24/button=60 is unassigned;
+button=60 with axis below 24 is an axis, avoiding loss of pitch/roll bindings.
+
+Joystick assignments are persisted separately in bfN-joystick-authoring.json and
+exported as JSON joystick plans with source device, context/action/slot, raw axis,
+button, negate, mode and physical HID identity. The plan explicitly marks runtime
+output unimplemented. Unassigned/unknown targets cannot be assigned. This page
+no longer creates keyboard PR0 commands. Earlier keyboard draft files/PR0 exports
+are preserved, and the low-level PR0 library remains for regression coverage.
+Joystick PR0 encoding/runtime output remain future work; no invented vendor
+joystick commands, game-file edits or profile activation were introduced.
+
+Debug/Release solution builds and core tests passed. Tests cover mixed-device
+imports, sentinel distinction, labels, inverted axes, exact plan fields, rejected
+unsupported targets and duplicate mappings. Added --joystick-profiles read-only
+integration checks. Actual files and the running UI both showed BF3=91 and
+BF4=127 joystick records, with 44 learned X52 inputs. Jet Fire=button code 0,
+Pitch=axis 7/negate 1 and Roll=axis 6 were observed in the saved files. Game file
+SHA-256 hashes were unchanged across UI imports. Inspected the profile page with
+BF4 jet pitch selected; no demonstration assignments were saved into user plans.
+Original Visual Studio Debug app remains running. No in-game mapping test occurred.
+
+## 2026-09-22 - Device-specific enhanced power management
+
+Added Registry tweaks to the existing native Visual Studio application. It reads
+present original-X52 USB instances (VID_06A3/PID_075C), displays the exact registry
+path/value and supports disable/restore through a short-lived runas helper.
+Only EnhancedPowerManagementEnabled is written; no HID child keys, global power
+plans, other USB devices, ACL changes or automatic device resets are involved.
+Original 0/1/absent state is preserved before writing in exe-local data/registry
+JSON using CREATE_NEW; restore validates device identity and value. Both writes
+verify readback. The main application remains asInvoker.
+
+Debug and Release solution builds and core tests passed. New tests cover device
+identity/path rejection, backup roundtrips and mismatches, DWORD type validation,
+and write/readback/restore/deletion in an isolated HKCU test key. These tests do
+not mutate HKLM. Visually inspected the new themed page in the running original
+Visual Studio Debug application. Live readback on USB instance
+6&1E5B6DD0&0&3 showed DWORD 0; its backup records original DWORD 1, created at
+2026-09-22T00:28:17.414Z. The app reported helper success. At final inspection
+the physical device was disconnected; reboot/reconnect and actual dropout
+improvement remain unverified. No automatic reset or in-game test was performed.
+
+Both user-supplied AVSIM and Reddit threads are linked in docs/power-management.md.
+Similar X52 symptoms recur in those reports, but results for the registry workaround
+are mixed and connector/solder issues are also reported. Do not infer a confirmed
+cause or failure prevalence. Stick inactivity remains log-only suspicion.

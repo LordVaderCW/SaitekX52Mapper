@@ -194,6 +194,8 @@
   </ImportGroup>
   <ItemGroup>
     <ClCompile Include="..\src\device\MfdSettings.cpp" />
+    <ClCompile Include="..\src\device\PowerManagement.cpp" />
+    <ClInclude Include="..\src\device\PowerManagement.hpp" />
     <ClInclude Include="..\src\device\MfdSettings.hpp" />
     <ClInclude Include="..\src\input\AxisFilter.hpp" />
   </ItemGroup>

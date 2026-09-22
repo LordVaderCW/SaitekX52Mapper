@@ -9,6 +9,9 @@ struct BattlefieldBinding {
     int slot{}, type{}, button{}, axis{}, negate{};
 };
 std::vector<BattlefieldBinding> ReadBattlefieldBindings(const std::filesystem::path& path);
+enum class JoystickBindingKind { NotJoystick, Button, Axis, Unassigned, Unknown };
+JoystickBindingKind JoystickKind(const BattlefieldBinding& binding);
+std::vector<BattlefieldBinding> JoystickBindings(const std::vector<BattlefieldBinding>& bindings);
 struct ProfileAction { std::string device; unsigned usage{}, page{}; };
 std::optional<ProfileAction> ProfileOutput(const BattlefieldBinding& binding);
 std::wstring BindingLabel(const BattlefieldBinding& binding);
@@ -24,6 +27,7 @@ std::string EncodePr0(const Pr0Node& node); // UTF-16LE with BOM, as saved by Lo
 struct ProfileButton { std::string id, name; };
 std::vector<ProfileButton> ProfileButtons(const Pr0Node& profile);
 struct ProfileMapping { int mode{}; std::string control; BattlefieldBinding binding; };
+Json BuildJoystickPlan(int game, const std::vector<ProfileMapping>& mappings);
 Pr0Node BuildBattlefieldPr0(const Pr0Node& base, const std::vector<ProfileMapping>& mappings, const std::string& name);
 std::filesystem::path BattlefieldSettingsPath(int game);
 std::filesystem::path InstalledX52TemplatePath();

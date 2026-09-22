@@ -1,47 +1,44 @@
-# Battlefield to Logitech profile workflow
+# Battlefield joystick / joypad plans
 
 Use the existing SaitekX52Mapper Visual Studio project. In **Battlefield profiles**:
 
-1. Import Battlefield 3 or 4. The app reads `Documents/Battlefield 3/settings/PROF_SAVE_profile`
-   or `Documents/Battlefield 4/settings/PROFSAVE_profile`, using Windows' Documents location.
-2. Select an X52 mode, a named physical button and an existing game command/key.
-   Context filtering separates jet, heli, infantry, vehicle and general bindings.
-3. Assign / replace. Each button has one override per mode; assignments persist.
-4. Export .pr0 draft. Open it in Logitech's editor, inspect the modes, then test
-   the programmed outputs before using it in Battlefield.
+1. Import Battlefield 3 or 4. The app reads the Windows Documents location:
+   `Battlefield 3/settings/PROF_SAVE_profile` or `Battlefield 4/settings/PROFSAVE_profile`.
+2. The page shows only device-type 2 joystick/joypad records. Keyboard and mouse
+   entries are excluded. Filter by game context (jet, heli, infantry, etc.).
+3. Select an X52 mode, a physical input from your saved HID identification links,
+   and an assigned Battlefield joystick binding. The input list includes identified
+   buttons, hats and axes. Identify missing controls on Live inputs and reimport.
+4. Assign / replace saves the plan. Removing an override removes that plan entry.
+5. Export joystick plan writes a separate JSON file in `data/profiles` beside the
+   executable. These plans do not yet produce joystick output and are not PR0 files.
 
-Exports use the installed original-X52 `SaiD075C.pr0` as the base, retaining its
-control catalog, mouse defaults, six mode selections and fallback relationships.
-Mode 2/3 inherit Mode 1. Pinkie modes inherit their respective base mode. Removing
-an override restores inheritance/default behaviour; it is not an explicit Disable.
-Pinkie and clutch are reserved for shift/profile selection in this first editor.
-Mouse/scroll buttons retain vendor assignments unless explicitly overridden.
+The binding labels retain Battlefield's numeric axis/button codes and inversion.
+A button code must not be assumed to be the corresponding X52 HID usage or button
+number. Codes representing directional inputs are left numeric until verified.
+For the BF3/BF4 format handled here, axis=24/button=60 is unassigned; button=60
+with an axis below 24 is an axis binding, including inverted pitch. Unassigned
+and unknown encodings remain visible but cannot be assigned as output targets.
 
-Supported outputs are known DirectInput keyboard scan codes translated to USB
-keyboard usages, plus left/right mouse actions found in the installed template.
-Unbound value 255, unsupported keys, joystick bindings and mouse-axis/wheel
-encodings are excluded from the selector. Hat/axis input programming is not
-exported yet. Analogue flight controls remain in Battlefield; the app does not
-rewrite game settings or convert axes to digital keys. Check custom bindings for
-double actions if the game also listens to the same physical button directly.
+Authoring files are `data/bf3-joystick-authoring.json` and
+`data/bf4-joystick-authoring.json`. They store each mode and learned HID link plus
+context, action, slot, type, axis, button and negate. Reimport resolves saved
+binding identities against current game settings and reports missing/unsupported
+entries. This plan format explicitly marks runtime output as unimplemented.
+Mode labels are planning slots; no runtime mode inheritance is implied.
 
-Imports retain context/action/slot identities. Saved plans resolve these against
-a fresh game import; missing/unsupported rows are reported for reassignment.
-Editing a game's key changes the selected output after reimport. Key labels use
-the Windows keyboard layout; the exported usage identifies the physical key.
+The game settings are never modified by importing, assigning or exporting plans.
+No profiler or firmware profile is activated. Earlier keyboard/mouse authoring
+files (`bfN-authoring.json`) and PR0 exports are left intact and are not loaded in
+this joystick-only UI. The previous PR0 parser/export library remains available
+for regression tests; a verified joystick-output encoding is still required
+before joystick plans can become Logitech profiles.
 
-PR0 files are bracket-structured text, not JSON. Parsing bounds size, nesting and
-node counts, validates the original X52 controller/member and stock mode order,
-rejects ambiguous/unsupported syntax, and retains unknown fields in the supported
-syntax. Exports use UTF-16LE with BOM and version 5, matching the user's sample.
-No profile is activated automatically or substituted for a vendor profile.
+Observed in the user's files on 2026-09-21: BF3 contains 91 joystick records;
+BF4 contains 127. Both contain jet Fire button code 0 and inverted Pitch axis 7.
+These are saved-file observations, not in-game verification or physical X52
+control correspondences. The read-only integration check is:
 
-Observed on 2026-09-21: BF3 has 259 binding records; BF4 has 372, including unbound
-and non-keyboard records. The saved sample confirms Trigger (`0x00090001`) to
-Space (`page=7`, `usage=0x2C`, `value=1`). Generated trigger-only examples in
-`out/profile-research` are integration probes, not complete or game-verified layouts.
-
-The [Logitech X52 guide](https://www.logitech.com/assets/65328/2/x52-hotas.pdf),
-pages 13–16, describes profiles created in the software and selected from files
-on the computer through the MFD. Logitech's driver/profiler is the activation
-runtime here. Standalone onboard storage/firmware upload has not been established.
+```powershell
+./out/x64/Debug/X52Tests.exe --joystick-profiles
+```
