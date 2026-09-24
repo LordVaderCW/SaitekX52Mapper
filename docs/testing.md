@@ -289,3 +289,38 @@ Both user-supplied AVSIM and Reddit threads are linked in docs/power-management.
 Similar X52 symptoms recur in those reports, but results for the registry workaround
 are mixed and connector/solder issues are also reported. Do not infer a confirmed
 cause or failure prevalence. Stick inactivity remains log-only suspicion.
+
+## 2026-09-23 - Themed device properties
+
+Added Test and Deadzones and split LEDs from MFD in the existing solution. Test
+shows driver-reported axes/buttons/hats. Deadzones reads all nine existing vendor
+calibration envelopes with four independently movable, bounded handles. Explicit
+Apply backs up the original in exe-local data/calibration-backups, detects stale
+edits, updates only validated calibration-only content and uses the traced vendor
+reload sequence. The Logitech-owned calibration file remains in its vendor
+ProgramData folder; our own data remains beside the executable. Opening pages
+never changes the user's tuned defaults. Unsupported custom curves/command
+profiles are rejected. Added clock 2/3 GMT offsets, date format and clock 1 daylight
+adjustment through the validated Logitech 8.0.116.0 adapter.
+
+Debug/Release builds and core tests passed. Live nine-axis read succeeded; one
+stick X centre-low unit changed, reloaded and was restored. Live extended MFD
+roundtrips restored all four original options with readback. Native UI keyboard
+edit/Apply-enable/Refresh-discard and unchanged calibration hash checks passed.
+Normal/maximized screenshots were inspected; corrected DC mapping-state leakage
+in the new buffered Test renderer. Detailed protocol evidence, tests and limits
+are in docs/device-properties.md. No in-game test or new dropout diagnosis.
+
+Mouse editing regression checks (2026-09-23): native hit testing, independent
+coincident centre-handle drags, capture release, disabled input and unchanged
+other axes pass in Debug and Release. The running Debug app passed mouse drag
+and keyboard pending-edit/refresh-discard checks with unchanged calibration hash.
+The persistent header no longer displays a changing report counter; live table
+cells skip identical text and hidden properties views skip input-display updates.
+No comparative CPU benchmark was performed.
+
+2026-09-24 manual calibration reload: Debug/Release builds and core tests passed.
+Optional --reload-saved-calibration refused the connected driver's empty calibration
+path before any request/write. Valid-path reload/stale/pending integration branches
+remain unexercised in this device state. No physical centring or game recovery is
+claimed. No automatic fallback to the old on-disk file was introduced.

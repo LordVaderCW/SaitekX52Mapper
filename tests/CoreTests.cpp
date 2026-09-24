@@ -1,3 +1,4 @@
+#include "device/DeadzoneSettings.hpp"
 #include "app/InspectorService.hpp"
 #include "util/Text.hpp"
 #include "diagnostics/CaptureAnalysis.hpp"
@@ -11,6 +12,7 @@
 void ScrollbarTests();
 void ThemeTests();
 void PowerManagementTests();
+void PropertiesTests();
 
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -19,6 +21,7 @@ void Tests()
     ScrollbarTests();
     ThemeTests();
     PowerManagementTests();
+    PropertiesTests();
     using namespace x52;
     {
         std::wstring executable(32768, L'\0');
@@ -352,6 +355,50 @@ int main(int argc, char** argv)
 {
     try {
         Tests();
+        if(argc>1 && std::string(argv[1])=="--mfd-extra-roundtrip") {
+            using namespace x52;
+            std::vector<std::wstring> paths;for(const auto& device:EnumerateHid())if(device.isPs28())paths.push_back(device.path);
+            Require(paths.size()==1,"exactly one X52 required");
+            const auto before=ReadMfdSettings(paths[0]);
+            const std::array<DWORD,4> values{static_cast<DWORD>(std::find(X52TimeZones.begin(),X52TimeZones.end(),before.zoneMinutes[0])-X52TimeZones.begin()),
+                static_cast<DWORD>(std::find(X52TimeZones.begin(),X52TimeZones.end(),before.zoneMinutes[1])-X52TimeZones.begin()),before.dateFormat,before.daylight};
+            for(std::size_t i=0;i<values.size();++i){const auto option=static_cast<MfdOption>(static_cast<int>(MfdOption::Zone2)+i);
+                const DWORD changed=(values[i]+1)%(i<2?37u:i==2?3u:2u);
+                try{(void)SetMfdOption(paths[0],option,changed);}catch(...){(void)SetMfdOption(paths[0],option,values[i]);throw;}
+                (void)SetMfdOption(paths[0],option,values[i]);std::cout<<"Extra MFD setting "<<i<<" changed and restored with readback\n";}
+            return 0;
+        }
+        if(argc>1 && (std::string(argv[1])=="--properties-read" || std::string(argv[1])=="--deadzone-roundtrip" || std::string(argv[1])=="--reload-saved-calibration")) {
+            using namespace x52;
+            std::vector<std::wstring> paths; for(const auto& device:EnumerateHid())if(device.isPs28())paths.push_back(device.path);
+            if(paths.size()!=1)throw std::runtime_error("Expected exactly one X52");
+            std::cout<<"Driver calibration path: "<<Utf8(ReadX52CalibrationPath(paths[0]).wstring())<<"\n";
+            const auto before=ReadDeadzones(paths[0]);
+            std::cout<<"Calibration: "<<before.file.string()<<"\n";
+            for(std::size_t i=0;i<9;++i){std::cout<<std::hex<<DeadzoneAxes[i]<<std::dec;for(int v:before.axes[i].limits)std::cout<<" "<<v;std::cout<<"\n";}
+            const auto settings=ReadMfdSettings(paths[0]);
+            std::cout<<"Date "<<settings.dateFormat<<" daylight "<<settings.daylight<<" time zones "<<settings.zoneMinutes[0]<<" "<<settings.zoneMinutes[1]<<"\n";
+            if(std::string(argv[1])=="--reload-saved-calibration") {
+                auto stale=before;stale.original+=' ';
+                bool rejected=false;
+                try{(void)ReloadSavedDeadzones(stale,DefaultDataDirectory());}catch(...){rejected=true;}
+                Require(rejected,"Stale calibration reload must be refused");
+                auto pending=before;--pending.axes[0].limits[1];rejected=false;
+                try{(void)ReloadSavedDeadzones(pending,DefaultDataDirectory());}catch(...){rejected=true;}
+                Require(rejected,"Pending envelope edits must not be reloaded as saved calibration");
+                const auto actual=ReloadSavedDeadzones(before,DefaultDataDirectory());
+                Require(actual.file==before.file && actual.original==before.original && actual.axes==before.axes,"Reload preserves saved file and limits");
+                std::cout<<"Saved calibration reload accepted; file bytes and all limits unchanged. Physical centring and in-game recovery NOT verified.\n";
+            }
+            if(std::string(argv[1])=="--deadzone-roundtrip") {
+                auto trial=before;--trial.axes[0].limits[1];
+                auto changed=ApplyDeadzones(trial,DefaultDataDirectory());
+                changed.axes=before.axes;const auto restored=ApplyDeadzones(changed,DefaultDataDirectory());
+                if(restored.axes!=before.axes)throw std::runtime_error("Calibration restore mismatch");
+                std::cout<<"Calibration limit changed, reloaded, read back and restored\n";
+            }
+            return 0;
+        }
         if (argc > 1 && (std::string(argv[1]) == "--mfd" || std::string(argv[1]) == "--mfd-roundtrip")) {
             std::vector<std::wstring> paths;
             for (const auto& device : x52::EnumerateHid()) if (device.isPs28()) paths.push_back(device.path);

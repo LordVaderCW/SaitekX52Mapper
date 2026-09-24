@@ -57,9 +57,14 @@ Battlefield fields and learned HID links. Plans are not active controller profil
 joystick output and PR0 joystick export are not implemented. Existing keyboard
 drafts remain separate. See [profile workflow](docs/profile-authoring.md).
 
-The **MFD & LEDs** page controls the installed original X52 driver's clutch,
-latched clutch, MFD backlight, button LEDs, brightness and three clock formats.
+The **Test**, **Deadzones**, **LEDs** and **MFD** pages recreate the original X52
+properties controls in the mapper's theme. Test shows live axes, buttons and hats.
+Deadzones reads the vendor calibration and edits all nine axes with four handles
+per axis; Apply backs up and reloads the driver calibration. LEDs provides live
+brightness. MFD controls clutch, backlight, three clock formats, clock 2/3 time
+zones, clock 1 daylight adjustment and date format.
 Every change is read back; merely opening the page does not change settings.
+See [device properties](docs/device-properties.md) for behaviour and verification.
 The **Live inputs** page saves per-axis noise filtering for the identified throttle lever, both
 rotaries and thumb slider. Raw captures stay intact; normalized and safe internal
 values receive jitter suppression plus smoothing. Defaults: 45 ms, one raw count.

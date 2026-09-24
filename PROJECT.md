@@ -525,3 +525,79 @@ Both user-supplied AVSIM and Reddit threads are linked in docs/power-management.
 Similar X52 symptoms recur in those reports, but results for the registry workaround
 are mixed and connector/solder issues are also reported. Do not infer a confirmed
 cause or failure prevalence. Stick inactivity remains log-only suspicion.
+
+## 2026-09-23 - Themed device properties
+
+Added Test and Deadzones and split LEDs from MFD in the existing solution. Test
+shows driver-reported axes/buttons/hats. Deadzones reads all nine existing vendor
+calibration envelopes with four independently movable, bounded handles. Explicit
+Apply backs up the original in exe-local data/calibration-backups, detects stale
+edits, updates only validated calibration-only content and uses the traced vendor
+reload sequence. The Logitech-owned calibration file remains in its vendor
+ProgramData folder; our own data remains beside the executable. Opening pages
+never changes the user's tuned defaults. Unsupported custom curves/command
+profiles are rejected. Added clock 2/3 GMT offsets, date format and clock 1 daylight
+adjustment through the validated Logitech 8.0.116.0 adapter.
+
+Debug/Release builds and core tests passed. Live nine-axis read succeeded; one
+stick X centre-low unit changed, reloaded and was restored. Live extended MFD
+roundtrips restored all four original options with readback. Native UI keyboard
+edit/Apply-enable/Refresh-discard and unchanged calibration hash checks passed.
+Normal/maximized screenshots were inspected; corrected DC mapping-state leakage
+in the new buffered Test renderer. Detailed protocol evidence, tests and limits
+are in docs/device-properties.md. No in-game test or new dropout diagnosis.
+
+### Mouse editing and repaint reduction (2026-09-23)
+
+Deadzone controls now explicitly receive mouse hit tests, capture drags, and expose
+separate larger centre handles even when their values coincide. Rail hit targets
+exclude adjacent labels; compact rows retain room for the numeric bounds. Added
+native control regression tests for each centre handle, capture release, disabled
+editing and preservation of the other axes. The running Visual Studio Debug app
+passed mouse and keyboard edit/Apply-enable/Refresh-discard probes without any
+change to the driver calibration file hash. Normal and maximized pages inspected.
+
+Removed the report counter from the persistent connection header, so receipt of a
+report alone no longer changes that label. Live-input cells are updated only when
+their displayed text changes. Hidden Test and Deadzones views skip input display
+updates. Diagnostic counters and capture remain available; this change does not
+claim a measured CPU improvement or alter HID sampling. Debug and Release solution
+builds and core tests passed after these changes.
+
+## Displaced stick centre and manual reload (2026-09-24)
+
+User supplied X raw 1452/1454 (0..2047), normalized +0.419/+0.421,
+with Y=1024. They confirmed the stick was physically centred and left/right
+movement still changed the reading. This is an observed displaced reported centre
+with two counts of variation, not evidence of a frozen axis or a proven reset
+signature. Do not widen the deadzone to mask this fault or auto-recentre held input.
+
+Added a manual Reload saved calibration action to Deadzones. It uses the current
+version/identity-checked vendor calibration path, refuses stale or pending edits,
+backs up the exact original bytes, requests the existing traced reload and verifies
+that path, bytes and all nine envelopes remain unchanged. No file rewrite, USB
+reset, registry change, automatic recovery or new centre measurement is performed.
+The UI explicitly asks the user to check physical centring and the game afterward;
+a successful driver call is not proof of recovery.
+
+The live test on this date found that the driver returns an EMPTY calibration path,
+although the previous vendor calibration file still exists on disk. The operation
+was refused before any reload/write. The UI now explains this condition explicitly
+instead of calling it an unsupported location. It does not guess or automatically
+load a file. Opening the vendor X52 Properties / Deadzones page and refreshing the
+mapper is the next diagnostic step; whether this establishes the path or corrects
+the offset remains unverified. The existing tuned file was not changed.
+
+Logitech's published original-X52 procedure requires USB unplug/replug plus clearing
+calibration entries and cycling axes. That is not a documented no-disconnect reset:
+https://support.logi.com/hc/en-nz/articles/360023346933-Recalibrate-the-X52-H-O-T-A-S-axes-RegEdit
+The new --reload-saved-calibration integration switch deliberately requests a reload
+when a valid current file exists. Ordinary tests never perform this operation.
+
+Validation for manual reload: final Debug and Release solution builds and ordinary
+core tests passed. The optional live reload integration attempt stopped at the
+empty-path validation before issuing a reload; its expected stale/pending/success
+branches could not be exercised against this device state. No registry changes,
+USB resets, saved calibration writes or in-game recovery tests were performed.
+Visual Studio and the mapper were not running during this turn; builds used the
+existing solution and output paths. The new action is available on the next launch.

@@ -13,12 +13,13 @@
 #include <future>
 #include "device/MfdSettings.hpp"
 #include "device/PowerManagement.hpp"
+#include "ui/PropertiesView.hpp"
 
 namespace {
 using namespace x52;
 constexpr wchar_t WindowClass[] = L"X52BattlefieldMapper.Inspector";
 constexpr int NavigationBase = 700;
-constexpr std::array PageNames{L"LIVE INPUTS", L"LEARN CONTROLS", L"CONNECTION HEALTH", L"HID INVENTORY", L"BATTLEFIELD PROFILES", L"MFD & LEDS", L"REGISTRY TWEAKS"};
+constexpr std::array PageNames{L"LIVE INPUTS", L"LEARN CONTROLS", L"CONNECTION HEALTH", L"HID INVENTORY", L"BATTLEFIELD PROFILES", L"MFD", L"REGISTRY TWEAKS", L"TEST", L"DEADZONES", L"LEDS"};
 enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, CaptureStart,
     CaptureStop, Dropout, Returned, Apply, ControlList, Tabs, Candidate, Name, Group, Neutral,
     Hold, Blend, Validation, Stale, CaptureLabel, IdentifySelected,
@@ -26,7 +27,7 @@ enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, Capt
     AddProfileMapping, RemoveProfileMapping, ExportPr0, ProfileMappingList, ProfileInfo, MfdRefresh, MfdClutch, MfdLatched, MfdLight, LedLight,
     ClockSelect, ClockFormat, LedLevel, LedPercent, MfdInfo,
     FilterThrottle, FilterSide, FilterTop, FilterSlider, FilterTime, FilterJitter, FilterApply,
-    PowerRefresh, PowerDisable, PowerRestore, PowerInfo };
+    PowerRefresh, PowerDisable, PowerRestore, PowerInfo, DeadzoneView, DeadzoneRefresh, DeadzoneApply, DeadzoneInfo, TestView, LedRefresh, Zone2, Zone3, DateFormat, Daylight, LedInfo, DeadzoneReload };
 struct Child { HWND handle{}; int page{-1}; int x{}, y{}, w{}, h{}; bool stretchX{}, stretchY{}; };
 std::wstring Text(HWND window)
 {
@@ -68,6 +69,7 @@ struct Application {
     HDEVNOTIFY notification{};
     std::vector<Child> children;
     std::vector<std::string> rows, candidates;
+    std::vector<std::array<std::wstring, 7>> displayedCells;
     std::vector<std::uint8_t> previousDisplayed;
     std::vector<BitChange> recentChanges;
     ULONGLONG changesUntil{};
@@ -86,6 +88,42 @@ struct Application {
     bool pendingMfdRefresh{};
     DWORD rememberedLed{100};
     bool filterUiLoaded{}, mfdTried{};
+    PropertiesView deadzoneView, testView;
+    std::future<DeadzoneSettings> deadzoneTask;
+    std::optional<DeadzoneSettings> deadzones;
+    bool deadzoneTried{}, deadzoneDirty{};
+    bool deadzoneReloading{};
+    void StartDeadzones(bool apply=false, bool reload=false)
+    {
+        if(deadzoneTask.valid())return;
+        deadzoneTried=true;
+        if((apply || reload) && !deadzones)return;
+        if(reload && deadzoneDirty)return;
+        deadzoneReloading=reload;
+        if(apply)deadzones->axes=deadzoneView.Settings();
+        const auto desired=deadzones;const auto directory=service.directory();
+        EnableIfChanged(Item(DeadzoneView),false);EnableIfChanged(Item(DeadzoneApply),false);EnableIfChanged(Item(DeadzoneRefresh),false);
+        EnableIfChanged(Item(DeadzoneReload),false);
+        SetText(Item(DeadzoneInfo),reload?L"Reloading saved calibration without changing limits. This is not a USB or firmware reset...":apply?L"Saving calibration backup, applying and checking readback...":L"Reading Logitech driver calibration...");
+        deadzoneTask=std::async(std::launch::async,[apply,reload,desired,directory]{
+            if(reload)return ReloadSavedDeadzones(*desired,directory);
+            if(apply)return ApplyDeadzones(*desired,directory);
+            std::vector<std::wstring> paths;for(const auto& device:EnumerateHid())if(device.isPs28())paths.push_back(device.path);
+            if(paths.size()!=1)throw std::runtime_error("Connect exactly one original X52 to edit deadzones");
+            return ReadDeadzones(paths.front());
+        });
+    }
+    void PollDeadzones()
+    {
+        if(page==8 && !deadzoneTried)StartDeadzones();
+        if(!deadzoneTask.valid() || deadzoneTask.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return;
+        try {deadzones=deadzoneTask.get();deadzoneView.Settings(deadzones->axes);deadzoneDirty=false;
+            EnableIfChanged(Item(DeadzoneView),true);
+            SetText(Item(DeadzoneInfo),deadzoneReloading?L"Saved calibration reloaded; file and limits unchanged. Check centred X/Y in Test and in-game; recovery is not verified.":L"Driver calibration loaded. Drag to edit; Apply saves to the X52 driver. Refresh discards pending edits.");
+        }catch(const std::exception& error){deadzones.reset();SetText(Item(DeadzoneInfo),L"Deadzones unavailable: "+Wide(error.what()));}
+        EnableIfChanged(Item(DeadzoneRefresh),true);
+        EnableIfChanged(Item(DeadzoneReload),deadzones.has_value()&&!deadzoneDirty);
+    }
     bool powerTried{};
     std::optional<X52PowerDevice> powerDevice;
     std::unique_ptr<UniqueHandle> powerProcess;
@@ -141,7 +179,7 @@ struct Application {
     void Check(int id, bool value) { if (Checked(id) != value) SendMessageW(Item(id), BM_SETCHECK, value ? BST_CHECKED : BST_UNCHECKED, 0); }
     void MfdEnabled(bool enabled)
     {
-        for (const auto id : {MfdClutch, MfdLight, LedLight, ClockSelect, ClockFormat}) EnableIfChanged(Item(id), enabled);
+        for (const auto id : {MfdClutch, MfdLight, LedLight, ClockSelect, ClockFormat, Zone2, Zone3, DateFormat, Daylight}) EnableIfChanged(Item(id), enabled);
         EnableIfChanged(Item(LedLevel), enabled);
         EnableIfChanged(Item(MfdLatched), enabled && Checked(MfdClutch));
     }
@@ -217,7 +255,7 @@ struct Application {
     }
     void PollMfd()
     {
-        if (page == 5 && !mfdTried) StartMfd();
+        if ((page == 5 || page == 9) && !mfdTried) StartMfd();
         SendPendingMfd();
         SendPendingLed();
         if (!mfdTask.valid() || mfdTask.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return;
@@ -234,6 +272,10 @@ struct Application {
                 SetText(Item(LedPercent), std::to_wstring(values.ledBrightness) + L"%");
             }
             ShowClockFormat();
+            const auto select=[&](int id,int value){if(SendMessageW(Item(id),CB_GETCURSEL,0,0)!=value)SendMessageW(Item(id),CB_SETCURSEL,value,0);};
+            if(!MfdQueued(MfdOption::DateFormat))select(DateFormat,static_cast<int>(values.dateFormat));
+            if(!MfdQueued(MfdOption::Daylight))Check(Daylight,values.daylight);
+            for(int i=0;i<2;++i)if(!MfdQueued(i==0?MfdOption::Zone2:MfdOption::Zone3))select(i==0?Zone2:Zone3,static_cast<int>(std::find(X52TimeZones.begin(),X52TimeZones.end(),values.zoneMinutes[static_cast<std::size_t>(i)])-X52TimeZones.begin()));
             MfdEnabled(true);
             SetText(Item(MfdInfo), values.clutch ?
                 L"I is currently reserved for Logitech profile selection. Uncheck the option above to use I as a regular button.\r\nPress once to latch means press I to enter profile selection, then press it again to exit; otherwise hold I." :
@@ -301,7 +343,7 @@ struct Application {
         Add(L"BUTTON", L"Identify input...", IdentifySelected, -1, 730, 129, 246, 32, WS_TABSTOP);
         int i = 0;
         for (const auto label : PageNames) {
-            const auto nav = Add(L"BUTTON", label, NavigationBase + i, -1, 36, 184 + i * 42, 224, 40, WS_TABSTOP);
+            const auto nav = Add(L"BUTTON", label, NavigationBase + i, -1, 36, 184 + i * 32, 224, 31, WS_TABSTOP);
             SetPropW(nav, L"X52.Navigation", reinterpret_cast<HANDLE>(1));
             if (i++ == 0) SetPropW(nav, L"X52.Selected", reinterpret_cast<HANDLE>(1));
         }
@@ -376,20 +418,45 @@ struct Application {
         Add(L"BUTTON", L"Use I for Logitech profile selection", MfdClutch, 5, 24, 255, 360, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
         Add(L"BUTTON", L"Press once to latch (instead of holding I)", MfdLatched, 5, 420, 255, 440, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
         Add(L"BUTTON", L"MFD backlight on", MfdLight, 5, 24, 293, 235, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
-        Add(L"BUTTON", L"Button LEDs on", LedLight, 5, 24, 332, 210, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
-        Add(L"STATIC", L"LED brightness", 0, 5, 250, 332, 130, 26);
-        Add(TRACKBAR_CLASSW, L"", LedLevel, 5, 385, 326, 490, 38, TBS_HORZ | TBS_NOTICKS | WS_TABSTOP);
+        Add(L"BUTTON", L"Button LEDs on", LedLight, 9, 24, 332, 210, 26, BS_AUTOCHECKBOX | WS_TABSTOP);
+        Add(L"STATIC", L"LED brightness", 0, 9, 250, 332, 130, 26);
+        Add(TRACKBAR_CLASSW, L"", LedLevel, 9, 385, 326, 490, 38, TBS_HORZ | TBS_NOTICKS | WS_TABSTOP);
         SendMessageW(Item(LedLevel), TBM_SETRANGE, FALSE, MAKELPARAM(0, 100));
         SendMessageW(Item(LedLevel), TBM_SETPAGESIZE, 0, 10);
-        Add(L"STATIC", L"--%", LedPercent, 5, 891, 332, 70, 26);
-        Add(L"STATIC", L"Clock on the MFD", 0, 5, 24, 382, 150, 26);
-        Add(L"COMBOBOX", L"", ClockSelect, 5, 180, 377, 260, 160, CBS_DROPDOWNLIST | WS_TABSTOP);
+        Add(L"STATIC", L"--%", LedPercent, 9, 891, 332, 70, 26);
+        Add(L"STATIC", L"Clock on the MFD", 0, 5, 24, 345, 150, 26);
+        Add(L"COMBOBOX", L"", ClockSelect, 5, 180, 340, 260, 160, CBS_DROPDOWNLIST | WS_TABSTOP);
         FillCombo(ClockSelect, {L"Clock 1", L"Clock 2", L"Clock 3"});
-        Add(L"STATIC", L"Time format", 0, 5, 460, 382, 110, 26);
-        Add(L"COMBOBOX", L"", ClockFormat, 5, 580, 377, 395, 160, CBS_DROPDOWNLIST | WS_TABSTOP);
+        Add(L"STATIC", L"Time format", 0, 5, 460, 345, 110, 26);
+        Add(L"COMBOBOX", L"", ClockFormat, 5, 580, 340, 395, 160, CBS_DROPDOWNLIST | WS_TABSTOP);
         FillCombo(ClockFormat, {L"24-hour (e.g. 18:30)", L"12-hour (e.g. 6:30 PM)"});
-        Add(L"STATIC", L"The X52 has three clock slots. Select a slot above to change its display format.\r\nTime zones remain as set in Logitech's control panel. LED brightness updates live as you drag the slider.", 0, 5, 24, 420, 952, 54, 0, true);
-        Add(L"STATIC", L"Open this tab to read the device settings.", MfdInfo, 5, 24, 500, 952, 75, 0, true);
+        Add(L"BUTTON",L"Clock 1: daylight time adjustment",Daylight,5,24,390,420,26,BS_AUTOCHECKBOX|WS_TABSTOP);
+        Add(L"STATIC",L"Clock 2 time zone",0,5,24,438,210,26);
+        Add(L"COMBOBOX",L"",Zone2,5,250,432,340,240,CBS_DROPDOWNLIST|WS_TABSTOP);
+        Add(L"STATIC",L"Clock 3 time zone",0,5,24,483,210,26);
+        Add(L"COMBOBOX",L"",Zone3,5,250,477,340,240,CBS_DROPDOWNLIST|WS_TABSTOP);
+        for(const int minutes:X52TimeZones){wchar_t label[40]{};swprintf_s(label,L"GMT %c%02d:%02d",minutes<0?L'-':L'+',abs(minutes)/60,abs(minutes)%60);
+            for(const auto id:{Zone2,Zone3})SendMessageW(Item(id),CB_ADDSTRING,0,reinterpret_cast<LPARAM>(label));}
+        Add(L"STATIC",L"Date format",0,5,24,528,210,26);
+        Add(L"COMBOBOX",L"",DateFormat,5,250,522,340,160,CBS_DROPDOWNLIST|WS_TABSTOP);
+        FillCombo(DateFormat,{L"MM-DD-YY",L"DD-MM-YY",L"YY-MM-DD"});
+        Add(L"STATIC",L"Open this tab to read the device settings.",MfdInfo,5,24,580,952,75,0,true);
+        Add(L"STATIC",L"X52 button illumination",0,9,24,220,600,26);
+        Add(L"BUTTON",L"Refresh from X52",LedRefresh,9,752,215,224,30,WS_TABSTOP);
+        Add(L"STATIC",L"Brightness updates on the device while you drag. Arrow keys make fine adjustments.",0,9,24,270,952,28,0,true);
+        Add(L"STATIC",L"",LedInfo,9,24,400,952,100,0,true);
+        Add(L"STATIC",L"Test the driver-reported axes, buttons and hats. No mapper smoothing is applied to this view.",0,7,24,220,952,28,0,true);
+        testView.Attach(Add(L"STATIC",L"",TestView,7,24,265,952,410,0,true,true),theme,false);
+        Add(L"STATIC",L"Drag the four handles: minimum, centre low, centre high, maximum. Red marks the reported input.",0,8,24,215,952,24,0,true);
+        Add(L"STATIC",L"Keyboard: Up/Down choose axis; Space chooses handle; Left/Right adjust; Shift makes larger steps.",0,8,24,245,952,24,0,true);
+        deadzoneView.Attach(Add(L"STATIC",L"",DeadzoneView,8,24,280,952,340,WS_TABSTOP|SS_NOTIFY,true,true),theme,true);
+        EnableIfChanged(Item(DeadzoneView),false);
+        Add(L"BUTTON",L"Refresh from driver",DeadzoneRefresh,8,24,635,245,30,WS_TABSTOP);
+        Add(L"BUTTON",L"Reload saved calibration",DeadzoneReload,8,295,635,310,30,WS_TABSTOP);
+        EnableIfChanged(Item(DeadzoneReload),false);
+        Add(L"BUTTON",L"Apply driver deadzones",DeadzoneApply,8,730,635,245,30,WS_TABSTOP);
+        EnableIfChanged(Item(DeadzoneApply),false);
+        Add(L"STATIC",L"",DeadzoneInfo,8,24,674,952,35,0,true);
         Add(L"STATIC", L"Noise filtering for identified throttle axes", 0, 0, 24, 558, 952, 22, 0, true);
         for (int axis = 0; axis < 4; ++axis) {
             constexpr std::array labels{L"Throttle lever", L"Side rotary", L"Top rotary", L"Thumb slider"};
@@ -433,9 +500,9 @@ struct Application {
             const auto id = GetDlgCtrlID(child.handle);
             const std::array actions{Reinitialize, Refresh, Export, Folder, IdentifySelected};
             const auto action = std::find(actions.begin(), actions.end(), id);
-            if (action != actions.end()) { x = 36; y = 504 + static_cast<int>(action - actions.begin()) * 36; w = 224; }
+            if (action != actions.end()) { x = 36; y = 516 + static_cast<int>(action - actions.begin()) * 36; w = 224; }
             if (child.handle == footer || id == 711 || (child.page == 0 && child.y >= 474)) y += extraY;
-            if (child.page == 6 && child.y >= 610) y += extraY;
+            if ((child.page == 6 && child.y >= 610) || (child.page==8 && child.y>=635)) y += extraY;
             if (!MoveWindow(child.handle, MulDiv(x, dpi, 96), MulDiv(y, dpi, 96),
                 MulDiv(std::max(1, w + (child.stretchX ? extraX : 0)), dpi, 96),
                 MulDiv(std::max(1, child.h + (child.stretchY ? extraY : 0)), dpi, 96), TRUE))
@@ -455,8 +522,11 @@ struct Application {
         EnableIfChanged(Item(FilterApply), filterUiLoaded);
         PollMfd();
         PollPower();
-        SetText(status, (last.connected ? L"CONNECTED   |   " : L"NOT CONNECTED   |   ") + last.device +
-            L"   |   Reports: " + std::to_wstring(last.sequence));
+        PollDeadzones();
+        if (page == 7) testView.Inputs(last.physical,last.connected);
+        if (page == 8) deadzoneView.Inputs(last.physical,last.connected);
+        SetText(Item(LedInfo),mfdSettings ? L"LED settings are read back from the driver after each change." : Text(Item(MfdInfo)));
+        SetText(status, (last.connected ? L"CONNECTED   |   " : L"NOT CONNECTED   |   ") + last.device);
         SetText(footer, Wide(last.error.empty() ? last.status : "ERROR: " + last.error));
         EnableIfChanged(Item(Learn), last.connected && last.sequence > 0);
         EnableIfChanged(Item(SaveLearn), last.learning && !last.learnCandidates.empty());
@@ -467,6 +537,7 @@ struct Application {
             for (const auto& [id, control] : last.physical.controls) { (void)control; keys.push_back(id); }
             if (keys != rows) {
                 rows = keys; ListView_DeleteAllItems(list);
+                displayedCells.assign(rows.size(), {});
                 for (std::size_t i = 0; i < rows.size(); ++i) {
                     auto text = Wide(rows[i]);
                     LVITEMW item{}; item.mask = LVIF_TEXT; item.iItem = static_cast<int>(i); item.pszText = text.data();
@@ -477,7 +548,13 @@ struct Application {
                 const auto& control = last.physical.controls.at(rows[i]);
                 const auto assignment = last.assignments.find(rows[i]);
                 const auto safe = last.safe.controls.find(rows[i]);
-                const auto set = [&](int column, std::wstring value) { ListView_SetItemText(list, static_cast<int>(i), column, value.data()); };
+                const auto set = [&](int column, std::wstring value) {
+                    auto& previous = displayedCells[i][static_cast<std::size_t>(column)];
+                    if (previous != value) {
+                        ListView_SetItemText(list, static_cast<int>(i), column, value.data());
+                        previous = std::move(value);
+                    }
+                };
                 set(1, assignment == last.assignments.end() ? L"Unassigned" : Wide(assignment->second.name));
                 set(2, assignment == last.assignments.end() || assignment->second.group == InputGroup::Unknown ? L"Unknown" :
                     assignment->second.group == InputGroup::Stick ? L"Stick" : L"Throttle");
@@ -574,6 +651,16 @@ struct Application {
             SetText(title, PageNames[static_cast<std::size_t>(page)]); Layout(); Poll(); return;
         }
         switch (id) {
+        case DeadzoneRefresh: StartDeadzones(); break;
+        case DeadzoneApply: StartDeadzones(true); break;
+        case DeadzoneView: deadzoneDirty=true; EnableIfChanged(Item(DeadzoneApply),deadzones.has_value()&&!deadzoneTask.valid()); EnableIfChanged(Item(DeadzoneReload),false); SetText(Item(DeadzoneInfo),L"Pending changes. Apply writes driver calibration; Refresh discards these edits.");break;
+        case DeadzoneReload: StartDeadzones(false,true);break;
+        case LedRefresh: StartMfd();break;
+        case Daylight: StartMfd(std::pair{MfdOption::Daylight,static_cast<DWORD>(Checked(Daylight))});break;
+        case Zone2: case Zone3: case DateFormat: {
+            const auto value=SendMessageW(Item(id),CB_GETCURSEL,0,0);
+            if(value!=CB_ERR)StartMfd(std::pair{id==Zone2?MfdOption::Zone2:id==Zone3?MfdOption::Zone3:MfdOption::DateFormat,static_cast<DWORD>(value)});break;
+        }
         case PowerRefresh: powerResult.clear(); RefreshPower(); break;
         case PowerDisable: ChangePower(false); break;
         case PowerRestore: ChangePower(true); break;
@@ -793,7 +880,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lPa
             return 0;
         case WM_COMMAND:
             app->theme.Command(wParam, lParam);
-            if (HIWORD(wParam) == BN_CLICKED || ((LOWORD(wParam) == ProfileContext || LOWORD(wParam) == ClockSelect || LOWORD(wParam) == ClockFormat) && HIWORD(wParam) == CBN_SELCHANGE)) app->Command(LOWORD(wParam)); return 0;
+            if ((LOWORD(wParam)==DeadzoneView && HIWORD(wParam)==1) || HIWORD(wParam) == BN_CLICKED || ((LOWORD(wParam) == ProfileContext || LOWORD(wParam) == ClockSelect || LOWORD(wParam) == ClockFormat || LOWORD(wParam)==Zone2 || LOWORD(wParam)==Zone3 || LOWORD(wParam)==DateFormat) && HIWORD(wParam) == CBN_SELCHANGE)) app->Command(LOWORD(wParam)); return 0;
         case WM_NOTIFY:
             if (const auto result = app->theme.Notify(reinterpret_cast<NMHDR*>(lParam))) return *result;
             if (reinterpret_cast<NMHDR*>(lParam)->idFrom == ControlList) {

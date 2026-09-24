@@ -34,7 +34,7 @@ public:
             type != DEVPROP_TYPE_STRING || std::wstring_view(version.data()) != L"8.0.116.0")
             throw std::runtime_error("MFD settings support Logitech X52 driver 8.0.116.0; this driver has not been validated");
     }
-    void Io(DWORD code, void* input, DWORD inSize, void* output, DWORD outSize)
+    DWORD Io(DWORD code, void* input, DWORD inSize, void* output, DWORD outSize, bool exact = true)
     {
         UniqueHandle event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
         if (!event.valid()) throw WindowsException("Settings event", GetLastError());
@@ -51,7 +51,8 @@ public:
             if (!GetOverlappedResult(handle_.get(), &operation, &count, FALSE))
                 throw WindowsException("X52 settings completion", GetLastError());
         }
-        if (outSize && count != outSize) throw std::runtime_error("X52 settings returned an incomplete response");
+        if (exact && outSize && count != outSize) throw std::runtime_error("X52 settings returned an incomplete response");
+        return count;
     }
     DWORD Get(DWORD code) { DWORD value{}; Io(code, nullptr, 0, &value, sizeof(value)); return value; }
     void Set(DWORD code, DWORD value) { Io(code, &value, sizeof(value), nullptr, 0); }
@@ -73,6 +74,13 @@ public:
             if (clock[0] != i || clock[1] > 1) throw std::runtime_error("Unrecognized X52 clock format");
             result.twelveHour[i] = clock[1] != 0;
         }
+        result.dateFormat=Get(0x223624);
+        const auto daylight=Get(0x223658);
+        if(result.dateFormat>2 || daylight>1) throw std::runtime_error("Unsupported X52 date/daylight setting");
+        result.daylight=daylight!=0;
+        for(int i=0;i<2;++i){std::array<LONG,2> zone{i+1,0};Io(0x22361c,zone.data(),sizeof(zone),zone.data(),sizeof(zone));
+            if(zone[0]!=i+1 || std::find(X52TimeZones.begin(),X52TimeZones.end(),zone[1])==X52TimeZones.end()) throw std::runtime_error("Unsupported X52 time zone");
+            result.zoneMinutes[static_cast<std::size_t>(i)]=zone[1];}
         return result;
     }
 };
@@ -81,7 +89,7 @@ MfdSettings ReadMfdSettings(const std::wstring& path) { return SettingsDevice(pa
 MfdSettings SetMfdOption(const std::wstring& path, MfdOption option, DWORD value)
 {
     const bool brightness = option == MfdOption::MfdBrightness || option == MfdOption::LedBrightness;
-    if (value > (brightness ? 100u : 1u)) throw std::runtime_error("Invalid X52 setting value");
+    if (value > (brightness ? 100u : option==MfdOption::DateFormat?2u : (option==MfdOption::Zone2 || option==MfdOption::Zone3)?36u : 1u)) throw std::runtime_error("Invalid X52 setting value");
     SettingsDevice device(path);
     (void)device.Read(); // all required queries must succeed before any write
     switch (option) {
@@ -93,6 +101,12 @@ MfdSettings SetMfdOption(const std::wstring& path, MfdOption option, DWORD value
         std::array<DWORD, 2> clock{static_cast<DWORD>(option) - static_cast<DWORD>(MfdOption::Clock1), value};
         device.Io(0x223630, clock.data(), sizeof(clock), nullptr, 0); break;
     }
+    case MfdOption::DateFormat: device.Set(0x223628,value); break;
+    case MfdOption::Daylight: device.Set(0x22365c,value); break;
+    case MfdOption::Zone2: case MfdOption::Zone3: {
+        std::array<LONG,2> zone{option==MfdOption::Zone2?1:2,X52TimeZones[value]};
+        device.Io(0x223620,zone.data(),sizeof(zone),nullptr,0);break;
+    }
     default: throw std::runtime_error("Unknown X52 setting");
     }
     auto result = device.Read();
@@ -102,9 +116,41 @@ MfdSettings SetMfdOption(const std::wstring& path, MfdOption option, DWORD value
     case MfdOption::Latched: actual = result.latched; break;
     case MfdOption::MfdBrightness: actual = result.mfdBrightness; break;
     case MfdOption::LedBrightness: actual = result.ledBrightness; break;
+    case MfdOption::DateFormat: actual=result.dateFormat;break;
+    case MfdOption::Daylight: actual=result.daylight;break;
+    case MfdOption::Zone2: case MfdOption::Zone3: actual=static_cast<DWORD>(std::find(X52TimeZones.begin(),X52TimeZones.end(),result.zoneMinutes[option==MfdOption::Zone2?0:1])-X52TimeZones.begin());break;
     default: actual = result.twelveHour[static_cast<std::size_t>(option) - static_cast<std::size_t>(MfdOption::Clock1)]; break;
     }
     if (actual != value) throw std::runtime_error("X52 did not retain the requested setting; refresh its current settings");
     return result;
 }
+std::filesystem::path ReadX52CalibrationPath(const std::wstring& path)
+{
+    SettingsDevice device(path);
+    std::array<DWORD, 2> input{};
+    std::array<wchar_t, 512> output{};
+    const auto bytes = device.Io(0x222804, input.data(), sizeof(input), output.data(), sizeof(output), false);
+    // CPL 0x10DC0: DWORD length, WORD path kind (0 = absolute), UTF-16 path.
+    if (bytes < 8 || bytes > sizeof(output) || bytes % 2 || output[2] != 0)
+        throw std::runtime_error("Unsupported X52 calibration path response");
+    const auto end = std::find(output.begin() + 3, output.begin() + bytes / 2, L'\0');
+    if (end == output.begin() + bytes / 2) throw std::runtime_error("Unterminated X52 calibration path");
+    return std::filesystem::path(std::wstring(output.begin() + 3, end));
+}
+void ReloadX52Calibration(const std::wstring& path, const std::filesystem::path& calibration)
+{
+    if (ReadX52CalibrationPath(path) != calibration) throw std::runtime_error("X52 calibration changed; refresh before applying");
+    const auto name = calibration.wstring();
+    if (name.size() > 260) throw std::runtime_error("Calibration path is too long");
+    SettingsDevice device(path);
+    // CPL 0x10BE0: zeroed 10-byte header followed by NUL-terminated UTF-16 path.
+    std::vector<BYTE> packet(10 + (name.size() + 1) * sizeof(wchar_t));
+    memcpy(packet.data() + 10, name.c_str(), (name.size() + 1) * sizeof(wchar_t));
+    std::array<DWORD, 2> request{};
+    device.Io(0x222800, packet.data(), static_cast<DWORD>(packet.size()), &request[1], sizeof(DWORD));
+    DWORD result{};
+    device.Io(0x22280c, request.data(), sizeof(request), &result, sizeof(result));
+    if (ReadX52CalibrationPath(path) != calibration) throw std::runtime_error("X52 calibration path readback mismatch");
+}
+
 }

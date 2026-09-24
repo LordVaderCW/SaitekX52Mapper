@@ -20,6 +20,12 @@ option on 2026-09-22. Restrict it to present USB VID_06A3/PID_075C instances,
 preserve the original value, use normal administrator approval and verify readback.
 No broad registry tweaks, automatic USB resets, power-plan changes or permission
 changes are included in that authorization.
+The user authorized themed Test, Deadzones, LEDs and MFD pages on 2026-09-23.
+Deadzone writes are limited to the current original-X52 calibration-only file,
+with local backups, stale-edit checks and the traced vendor calibration reload.
+Clock zones, date format and daylight options use the version-checked adapter.
+Do not load command profiles as calibration or alter the user's tuned defaults
+merely by visiting a page. See docs/device-properties.md for evidence and limits.
 
 No injection, hooks, game patches, anti-cheat interference, service restarts, USB
 disable/enable or driver installation. Software reopen is not an electrical reset.

@@ -1,7 +1,7 @@
 # Original X52 MFD settings and input filtering
 
 Open the existing SaitekX52Mapper.sln in Visual Studio, select Debug/x64 and F5.
-The MFD & LEDs tab reads the attached controller when first visited. Refresh
+The separate MFD and LEDs tabs read the attached controller when first visited. Refresh
 from X52 reloads changes made in Logitech's panel. Switches apply immediately.
 Button LED brightness uses a native 0..100% drag slider with a percentage label;
 dragging and keyboard adjustments update the device live, with readback after
@@ -23,8 +23,9 @@ profile selection before use. Pinkie remains reserved for shifting.
 
 The clock selector chooses Clock 1, 2 or 3; one explicit format dropdown edits
 that slot's 24-hour or 12-hour setting. Selecting another clock only displays its
-current format. Time zones, date format and synchronization remain in Logitech's
-control panel. The three driver settings remain independent.
+current format. MFD also edits clock 2/3 GMT offsets, date format and clock 1
+daylight adjustment; see docs/device-properties.md for the extended adapter.
+The three format settings remain independent.
 
 Noise filtering is on Live inputs, below the raw report display. The input table
 expands with the window while the raw report and filter controls remain anchored
