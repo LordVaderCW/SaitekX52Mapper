@@ -64,6 +64,11 @@ per axis; Apply backs up and reloads the driver calibration. LEDs provides live
 brightness. MFD controls clutch, backlight, three clock formats, clock 2/3 time
 zones, clock 1 daylight adjustment and date format.
 Every change is read back; merely opening the page does not change settings.
+Saved deadzones remain editable when the driver has not loaded its calibration.
+The optional Battlefield watcher (enabled by default) restores saved calibration
+after two missing-path checks while bf3.exe or bf4.exe runs. It logs and limits
+attempts; it cannot identify drift from an off-centre axis alone. The mapper must
+remain running, and physical/in-game recovery is not yet verified.
 See [device properties](docs/device-properties.md) for behaviour and verification.
 The **Live inputs** page saves per-axis noise filtering for the identified throttle lever, both
 rotaries and thumb slider. Raw captures stay intact; normalized and safe internal

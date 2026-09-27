@@ -137,9 +137,10 @@ std::filesystem::path ReadX52CalibrationPath(const std::wstring& path)
     if (end == output.begin() + bytes / 2) throw std::runtime_error("Unterminated X52 calibration path");
     return std::filesystem::path(std::wstring(output.begin() + 3, end));
 }
-void ReloadX52Calibration(const std::wstring& path, const std::filesystem::path& calibration)
+void ReloadX52Calibration(const std::wstring& path, const std::filesystem::path& calibration,
+    const std::filesystem::path& expectedActive)
 {
-    if (ReadX52CalibrationPath(path) != calibration) throw std::runtime_error("X52 calibration changed; refresh before applying");
+    if (calibration.empty() || ReadX52CalibrationPath(path) != expectedActive) throw std::runtime_error("X52 calibration changed; refresh before applying");
     const auto name = calibration.wstring();
     if (name.size() > 260) throw std::runtime_error("Calibration path is too long");
     SettingsDevice device(path);

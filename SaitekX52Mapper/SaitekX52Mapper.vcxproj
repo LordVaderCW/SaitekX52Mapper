@@ -195,6 +195,8 @@
   <ItemGroup>
     <ClCompile Include="..\src\device\MfdSettings.cpp" />
     <ClCompile Include="..\src\device\DeadzoneSettings.cpp" />
+    <ClCompile Include="..\src\app\CalibrationWatchdog.cpp" />
+    <ClInclude Include="..\src\app\CalibrationWatchdog.hpp" />
     <ClCompile Include="..\src\ui\PropertiesView.cpp" />
     <ClCompile Include="..\src\device\PowerManagement.cpp" />
     <ClInclude Include="..\src\device\PowerManagement.hpp" />

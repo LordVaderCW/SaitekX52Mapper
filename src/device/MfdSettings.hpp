@@ -15,7 +15,8 @@ struct MfdSettings {
 // Original X52 only. Commands traced from the installed Logitech 8.0.116.0 CPL.
 // This is a Windows driver interface, not USB feature reports or onboard profiles.
 std::filesystem::path ReadX52CalibrationPath(const std::wstring& path);
-void ReloadX52Calibration(const std::wstring& path, const std::filesystem::path& calibration);
+void ReloadX52Calibration(const std::wstring& path, const std::filesystem::path& calibration,
+    const std::filesystem::path& expectedActive);
 MfdSettings ReadMfdSettings(const std::wstring& path);
 MfdSettings SetMfdOption(const std::wstring& path, MfdOption option, DWORD value);
 }

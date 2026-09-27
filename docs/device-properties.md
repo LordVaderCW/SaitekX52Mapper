@@ -32,7 +32,10 @@ and reload it, reporting rollback failure explicitly if necessary.
 The vendor owns its calibration in ProgramData/SmartTechnology/Cpls. Updating
 that file is needed for Logitech compatibility. The mapper's own settings and
 backups remain beside its executable. Only an absolute SaiC075C-*.pr0 calibration
-path returned by the validated driver in that vendor directory is accepted.
+path in that vendor directory is accepted. A populated driver path takes precedence.
+If it is empty, the editor can read exactly one existing SaiC075C-*.pr0 file after
+full content validation. Multiple matching files are rejected instead of choosing
+the newest one. Reading the saved file does not activate it or apply defaults.
 The parser requires the original X52 controller/member GUIDs, calibration version
 0x01000001, nine unique known axes and plain envelopes. Command/shift profiles,
 unknown attributes, nonlinear curves and unsupported layouts are rejected.
@@ -59,8 +62,9 @@ These observations come from installed SaiC075C.dll, not X52 Pro APIs:
 | Date format | Get 0x223624 / set 0x223628, DWORD 0..2; page applies selection at 0x6908 |
 | Daylight adjustment | Get 0x223658 / set 0x22365C, DWORD 0/1; page applies checkbox at 0x684B |
 
-Calibration reload uses the current calibration-only path, never a game command
-profile. Readback proves the stored configuration and successful driver request,
+Calibration reload uses the current calibration-only path or the single validated
+saved file when the active path is empty, never a game command profile. Readback
+proves the stored configuration and successful driver request,
 not physical performance, reconnect persistence or an in-game result.
 
 ## Verification (2026-09-23)
@@ -85,18 +89,55 @@ surface without redrawing unrelated controls. No in-game or dropout-fix claim.
 ## Manual calibration reload
 
 The Deadzones page offers **Reload saved calibration** separately from Refresh
-(read only) and Apply (save edits). Reload is available only after a valid current
-calibration is read and while there are no pending edits. It backs up the current
+(read only) and Apply (save edits). Reload is available after a valid current or
+saved calibration is read and while there are no pending edits. It backs up the current
 file, refuses stale state, reapplies that exact calibration and verifies that the
 file bytes and all envelopes remain unchanged. This is a manual recovery experiment,
 not firmware recalibration or a USB reset. Check the physically centred stick and
 game afterward; success of the request alone does not establish recovery.
 
-On 2026-09-24 a live test returned an empty current calibration path. The new action
-correctly refused to issue the reload. The previous calibration file exists on disk,
-but the mapper does not guess which file to load. The UI asks the user to open the
-Logitech X52 Properties / Deadzones page and refresh, then retry only if the driver
-identifies its current file. Physical/in-game recovery is still unverified.
+On 2026-09-24 the empty-path restriction disabled the editor even though saved
+settings existed. This regression is fixed: the single validated saved file remains
+editable inside the app. Apply saves and activates edits; Reload activates unchanged
+saved settings. Both compare the freshly read active path with the original snapshot
+(including an empty path) before writing to the driver. Visiting the page is read-only.
+Errors retain an existing editor draft. No visit to Logitech's panel is required.
+Live testing started with an empty driver path, applied a one-unit X deadzone edit,
+restored it, and verified the original file hash. Physical drift recovery is unverified.
+
+The CPL creates the GUID suffix in these filenames with CoCreateGuid at RVA 0x182DC;
+it is not a hardware instance identifier. File discovery therefore requires a unique
+candidate and validates the complete original-X52 calibration structure.
+
+## Automatic restoration during Battlefield
+
+The Deadzones checkbox **Auto-restore lost calibration while Battlefield 3 / 4 is
+running** defaults on following the user's request. Its preference is stored in
+exe-local `data/calibration-recovery.json`. The app must remain running; it works
+while minimized and does not require the Deadzones page to stay open.
+
+Every two seconds an asynchronous worker checks for bf3.exe or bf4.exe by process
+name, then reads the version-checked X52 calibration path. No game memory access,
+hooks, injection, USB reset or registry editing is used. Two consecutive missing-path
+observations with the same device, saved file and bytes permit a saved-calibration
+reload. Active calibration never triggers recovery regardless of axis position.
+Manual edits/apply operations suspend automatic work. One request is allowed per
+loss, separated by at least 60 seconds, with at most three requests per session or
+explicit re-arm. Two active-path observations re-arm detection of the next loss.
+Read/write errors pause the watcher until the checkbox is toggled off/on.
+
+Before each request the app backs up the exact saved calibration and writes an
+attempt record under `data/calibration-recovery`. The record includes the reason,
+before/after report snapshots and result; it never labels the fault or recovery as
+verified. These snapshots may share a report sequence and do not prove physical
+movement. Reload readback verifies unchanged saved bounds, not successful gameplay.
+Drift with a nonempty active calibration path is not automatically corrected: the
+app cannot distinguish physical centre from intentional stick deflection.
+
+Synthetic tests cover game gating, two-sample confirmation, changed files, missing
+devices, active calibration, cooldown, one attempt per loss, the three-attempt cap
+and pause after errors. No physical calibration-loss fault or Battlefield recovery
+has been induced for testing.
 
 Logitech's [published original-X52 recalibration procedure](https://support.logi.com/hc/en-nz/articles/360023346933-Recalibrate-the-X52-H-O-T-A-S-axes-RegEdit)
 requires unplugging and reconnecting USB. No documented no-disconnect hardware

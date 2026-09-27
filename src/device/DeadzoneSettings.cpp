@@ -61,12 +61,15 @@ void Replace(const std::filesystem::path& file, const std::string& bytes)
         const auto error=GetLastError(); DeleteFileW(temporary.c_str()); throw WindowsException("Replace calibration file",error);
     }
 }
-void ValidateFile(const std::filesystem::path& file)
+std::filesystem::path CalibrationDirectory()
 {
-    if(file.empty())throw std::runtime_error("The X52 driver reports no active calibration file. Open the Logitech X52 Properties / Deadzones page, then Refresh here. No settings were changed.");
     struct Folder { PWSTR value{}; ~Folder(){ CoTaskMemFree(value); } } folder;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_ProgramData,0,nullptr,&folder.value))) throw std::runtime_error("Cannot locate Logitech calibration folder");
-    const auto expected = std::filesystem::path(folder.value)/L"SmartTechnology"/L"Cpls";
+    return std::filesystem::path(folder.value)/L"SmartTechnology"/L"Cpls";
+}
+void ValidateFile(const std::filesystem::path& file)
+{
+    const auto expected = CalibrationDirectory();
     if (!file.is_absolute() || std::filesystem::weakly_canonical(file.parent_path()) != std::filesystem::weakly_canonical(expected) ||
         !file.filename().wstring().starts_with(L"SaiC075C-") || file.extension() != L".pr0")
         throw std::runtime_error("Unsupported calibration location; use the installed X52 Properties panel first");
@@ -74,6 +77,23 @@ void ValidateFile(const std::filesystem::path& file)
     if(attributes==INVALID_FILE_ATTRIBUTES)throw WindowsException("Read saved X52 calibration attributes",GetLastError());
     if(attributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY))throw std::runtime_error("Expected a regular saved X52 calibration file");
 }
+}
+std::filesystem::path FindSavedX52Calibration(const std::filesystem::path& directory)
+{
+    std::filesystem::path candidate;
+    if(!std::filesystem::exists(directory))throw std::runtime_error("No saved X52 calibration folder was found. No defaults have been applied.");
+    for(const auto& entry:std::filesystem::directory_iterator(directory)) {
+        const auto& file=entry.path();
+        if(!file.filename().wstring().starts_with(L"SaiC075C-") || file.extension()!=L".pr0")continue;
+        if(!candidate.empty())throw std::runtime_error("Multiple saved X52 calibrations found; cannot choose one automatically.");
+        const auto attributes=GetFileAttributesW(file.c_str());
+        if(attributes==INVALID_FILE_ATTRIBUTES)throw WindowsException("Read saved X52 calibration attributes",GetLastError());
+        if(attributes&(FILE_ATTRIBUTE_REPARSE_POINT|FILE_ATTRIBUTE_DIRECTORY))throw std::runtime_error("Expected a regular saved X52 calibration file");
+        (void)DecodeDeadzones(Parse(Bytes(file)));
+        candidate=file;
+    }
+    if(candidate.empty())throw std::runtime_error("No saved original-X52 calibration file was found. No defaults have been applied.");
+    return candidate;
 }
 void ValidateDeadzone(const AxisDeadzone& axis)
 {
@@ -117,27 +137,34 @@ Pr0Node UpdateDeadzones(Pr0Node root, const std::array<AxisDeadzone,9>& axes)
 }
 DeadzoneSettings ReadDeadzones(const std::wstring& devicePath)
 {
-    DeadzoneSettings result; result.devicePath=devicePath; result.file=ReadX52CalibrationPath(devicePath); ValidateFile(result.file);
+    DeadzoneSettings result; result.devicePath=devicePath; result.activeFile=ReadX52CalibrationPath(devicePath);
+    result.file=result.activeFile.empty()?FindSavedX52Calibration(CalibrationDirectory()):result.activeFile;
+    ValidateFile(result.file);
     result.original=Bytes(result.file); result.axes=DecodeDeadzones(Parse(result.original)); return result;
 }
 DeadzoneSettings ApplyDeadzones(const DeadzoneSettings& desired, const std::filesystem::path& directory)
 {
     const auto current=ReadDeadzones(desired.devicePath);
-    if (current.file!=desired.file || current.original!=desired.original) throw std::runtime_error("Calibration changed outside the mapper. Refresh before applying your edits.");
+    if (current.file!=desired.file || current.activeFile!=desired.activeFile || current.original!=desired.original) throw std::runtime_error("Calibration changed outside the mapper. Refresh before applying your edits.");
     const auto encoded=EncodePr0(UpdateDeadzones(Parse(current.original),desired.axes));
-    if (current.axes==desired.axes) return current;
+    if (current.axes==desired.axes) return current.activeFile.empty()?ReloadSavedDeadzones(current,directory):current;
     const auto backups=directory/L"calibration-backups"; std::filesystem::create_directories(backups);
     const auto backup=backups/(L"before-"+std::to_wstring(std::chrono::system_clock::now().time_since_epoch().count())+L".pr0");
     Write(backup,current.original);
     if (Bytes(backup)!=current.original) throw std::runtime_error("Calibration backup verification failed");
     Replace(current.file,encoded);
     try {
-        ReloadX52Calibration(current.devicePath,current.file);
+        ReloadX52Calibration(current.devicePath,current.file,current.activeFile);
         auto actual=ReadDeadzones(current.devicePath);
         if (actual.axes!=desired.axes) throw std::runtime_error("Calibration readback mismatch");
         return actual;
     } catch (...) {
-        try { Replace(current.file,current.original); ReloadX52Calibration(current.devicePath,current.file); }
+        try {
+            Replace(current.file,current.original);
+            const auto active=ReadX52CalibrationPath(current.devicePath);
+            if(active==current.file)ReloadX52Calibration(current.devicePath,current.file,active);
+            else if(active!=current.activeFile)throw std::runtime_error("Active calibration changed during rollback");
+        }
         catch (...) { throw std::runtime_error("Calibration apply and rollback failed. Original saved in data/calibration-backups; refresh the device before continuing."); }
         throw;
     }
@@ -145,14 +172,14 @@ DeadzoneSettings ApplyDeadzones(const DeadzoneSettings& desired, const std::file
 DeadzoneSettings ReloadSavedDeadzones(const DeadzoneSettings& expected, const std::filesystem::path& directory)
 {
     const auto current=ReadDeadzones(expected.devicePath);
-    if(current.file!=expected.file || current.original!=expected.original || current.axes!=expected.axes)
+    if(current.file!=expected.file || current.activeFile!=expected.activeFile || current.original!=expected.original || current.axes!=expected.axes)
         throw std::runtime_error("Saved calibration changed or edits are pending. Refresh before reloading.");
     const auto backups=directory/L"calibration-backups";
     std::filesystem::create_directories(backups);
     const auto backup=backups/(L"before-reload-"+std::to_wstring(std::chrono::system_clock::now().time_since_epoch().count())+L".pr0");
     Write(backup,current.original);
     if(Bytes(backup)!=current.original)throw std::runtime_error("Calibration backup verification failed");
-    ReloadX52Calibration(current.devicePath,current.file);
+    ReloadX52Calibration(current.devicePath,current.file,current.activeFile);
     auto actual=ReadDeadzones(current.devicePath);
     if(actual.file!=current.file || actual.original!=current.original || actual.axes!=current.axes)
         throw std::runtime_error("Calibration changed during reload. Refresh to inspect the current settings.");

@@ -8,6 +8,29 @@ struct TestWindow {
     HWND handle{};
     ~TestWindow(){if(handle)DestroyWindow(handle);}
 };
+void SavedCalibrationTests(const std::string& valid)
+{
+    using namespace x52;
+    struct Fixture {
+        const std::filesystem::path directory=std::filesystem::temp_directory_path()/
+            (L"x52-calibration-test-"+std::to_wstring(GetCurrentProcessId())+L"-"+std::to_wstring(GetTickCount64()));
+        const std::filesystem::path first=directory/L"SaiC075C-first.pr0", second=directory/L"SaiC075C-second.pr0", other=directory/L"SaiC0762-other.pr0";
+        Fixture(){Check(std::filesystem::create_directory(directory),"Create isolated calibration fixture");}
+        ~Fixture(){std::error_code error;for(const auto& file:{first,second,other})std::filesystem::remove(file,error);std::filesystem::remove(directory,error);}
+    } fixture;
+    const auto write=[](const std::filesystem::path& file,const std::string& bytes){std::ofstream stream(file,std::ios::binary);stream<<bytes;stream.close();Check(!stream.fail(),"Write calibration fixture");};
+    const auto refused=[&]{try{(void)FindSavedX52Calibration(fixture.directory);return false;}catch(const std::exception&){return true;}};
+    Check(refused(),"Absent calibration must not fabricate defaults");
+    write(fixture.other,valid);Check(refused(),"Other model calibration is not used");
+    write(fixture.first,valid);
+    Check(FindSavedX52Calibration(fixture.directory)==fixture.first,"Saved X52 settings remain readable without an active driver path");
+    write(fixture.second,valid);Check(refused(),"Multiple saved calibrations require an explicit choice, not newest-file guessing");
+    std::filesystem::remove(fixture.second);
+    write(fixture.first,"[profile version=0x00000005 [commands]]");Check(refused(),"Command profiles cannot be fallback calibration");
+    write(fixture.first,std::string(65537,'x'));Check(refused(),"Saved calibration size remains bounded");
+    std::filesystem::remove(fixture.first);std::filesystem::create_directory(fixture.first);
+    Check(refused(),"Directories masquerading as saved calibration are rejected");
+}
 void MouseDragTests()
 {
     using namespace x52;
@@ -46,6 +69,7 @@ void PropertiesTests()
     std::ostringstream text;text<<"[profile version=0x01000001 [controllers [controller=e81d998b-c604-4d71-be97-35ca01439c7e [member=c7719f41-f667-4514-bbb4-3f38c9e4d05a] [controls ";
     for(const auto id:DeadzoneAxes)text<<"[axis="<<id<<" envelope=envelope [envelope cran=32768 hran=65535 ldead=30000 hdead=35000 hsat=65535 lcurve=32768 hcurve=32768]]";
     text<<"]]]]";
+    SavedCalibrationTests(text.str());
     const auto root=ParsePr0(text.str());auto axes=DecodeDeadzones(root);
     Check(axes[7].limits[1]==30000 && axes[8].limits[2]==35000,"Both mouse axes read real envelope limits");
     axes[7].limits={20,24000,41000,65000};

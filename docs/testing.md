@@ -324,3 +324,12 @@ Optional --reload-saved-calibration refused the connected driver's empty calibra
 path before any request/write. Valid-path reload/stale/pending integration branches
 remain unexercised in this device state. No physical centring or game recovery is
 claimed. No automatic fallback to the old on-disk file was introduced.
+
+2026-09-24 regression fix: saved calibration discovery now supports an empty active
+path without needing the vendor panel. Debug/Release builds and core tests passed,
+including absent/ambiguous/other-model/command-profile/oversized/directory file cases.
+The live empty-path -> one-unit edit -> restore test restored the original complete
+file hash. Native mouse drag, pending Apply and Refresh-discard checks passed.
+The new bounded Battlefield watcher has synthetic tests for all trigger/backoff
+branches; UI off/on persistence and waiting for Battlefield were verified. Automatic
+recovery from an induced hardware fault and in-game recovery remain untested.

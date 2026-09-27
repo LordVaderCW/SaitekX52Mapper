@@ -601,3 +601,44 @@ branches could not be exercised against this device state. No registry changes,
 USB resets, saved calibration writes or in-game recovery tests were performed.
 Visual Studio and the mapper were not running during this turn; builds used the
 existing solution and output paths. The new action is available on the next launch.
+
+## Restored deadzone editing and Battlefield watcher (2026-09-24)
+
+Supersedes the previous empty-path workaround: the editor now distinguishes the
+saved calibration file from the path currently loaded by the driver. When that
+path is empty, exactly one existing original-X52 calibration in the vendor Cpls
+folder can be read for editing after strict bounded content validation. This is
+read-only until Apply/Reload (or the explicitly requested Battlefield watcher).
+Multiple files, other models, command profiles, malformed/oversized files and
+non-regular files do not become a guessed default. The vendor GUID suffix is
+random (CPL CoCreateGuid at RVA 0x182DC), not a hardware instance identifier.
+
+Apply compares the active-path snapshot (including empty) and saved bytes before
+writing, backs up, reloads and checks readback. A failure retains an existing UI
+draft. Opening Logitech's panel is no longer needed to edit our saved settings.
+A live test starting with an empty active path read all nine original envelopes,
+applied a one-unit X centre-low adjustment and restored it. The complete original
+file hash was verified after restoration. Mouse drag/Apply-enable/Refresh-discard
+passed with unchanged file hash. Subsequent user changes to settings are retained.
+
+The user additionally requested automatic reload during Battlefield. Added a
+persistent checkbox on Deadzones, enabled by default, and a separate watcher.
+Every two seconds off the UI thread it checks for bf3.exe/bf4.exe, then verifies
+that the saved calibration has been lost on two consecutive observations of the
+same device/file/bytes. It reloads only validated saved calibration; axis positions
+are not a trigger. One attempt per loss, 60-second cooldown, three attempts per
+session/re-arm; errors pause it. Two active-path observations re-arm the next loss.
+Pending manual edits suspend automatic work. No game process access beyond names,
+hooks, USB resets, registry changes or output remapping were added.
+
+Backups remain under exe-local data/calibration-backups. Automatic attempts record
+reason, before/after report snapshots and result under data/calibration-recovery;
+configuration is data/calibration-recovery.json. Log records explicitly leave
+recovery_verified false; snapshots alone are not physical fault evidence.
+
+Debug/Release solution builds and core tests passed. Added saved-file discovery
+regressions and synthetic watcher tests for game gating, confirmation, changed
+files, device absence, active calibration, cooldown, one attempt per loss, retry
+cap and error pause. Running UI verified persisted off/on preference and waiting
+without a Battlefield process. Rebuilt and launched the existing solution through
+Visual Studio. No fault was induced and no in-game drift recovery was verified.

@@ -26,6 +26,13 @@ with local backups, stale-edit checks and the traced vendor calibration reload.
 Clock zones, date format and daylight options use the version-checked adapter.
 Do not load command profiles as calibration or alter the user's tuned defaults
 merely by visiting a page. See docs/device-properties.md for evidence and limits.
+On 2026-09-24 the user requested restored in-app deadzone editing and automatic
+calibration reload during Battlefield. When the driver path is empty, allow
+read-only discovery of exactly one validated saved original-X52 calibration.
+Apply/Reload may activate that file without requiring Logitech's panel. Automatic
+restore is limited to confirmed missing calibration while BF3/BF4 runs; never use
+an off-centre axis alone as a fault trigger. Keep backups, logs, stale-state checks,
+bounded retries and an off switch. Hardware drift recovery remains unverified.
 
 No injection, hooks, game patches, anti-cheat interference, service restarts, USB
 disable/enable or driver installation. Software reopen is not an electrical reset.

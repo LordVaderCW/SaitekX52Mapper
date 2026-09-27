@@ -146,6 +146,8 @@
   <ItemGroup>
     <ClCompile Include="..\src\device\MfdSettings.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\src\device\DeadzoneSettings.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="..\src\app\CalibrationWatchdog.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="..\src\app\CalibrationWatchdog.hpp"><Filter>Header Files</Filter></ClInclude>
     <ClCompile Include="..\src\ui\PropertiesView.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClCompile Include="..\src\device\PowerManagement.cpp"><Filter>Source Files</Filter></ClCompile>
     <ClInclude Include="..\src\device\PowerManagement.hpp"><Filter>Header Files</Filter></ClInclude>

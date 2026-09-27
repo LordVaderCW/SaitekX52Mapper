@@ -14,6 +14,7 @@
 #include "device/MfdSettings.hpp"
 #include "device/PowerManagement.hpp"
 #include "ui/PropertiesView.hpp"
+#include "app/CalibrationWatchdog.hpp"
 
 namespace {
 using namespace x52;
@@ -27,7 +28,7 @@ enum : int { Refresh = 101, Reinitialize, Export, Folder, Learn, SaveLearn, Capt
     AddProfileMapping, RemoveProfileMapping, ExportPr0, ProfileMappingList, ProfileInfo, MfdRefresh, MfdClutch, MfdLatched, MfdLight, LedLight,
     ClockSelect, ClockFormat, LedLevel, LedPercent, MfdInfo,
     FilterThrottle, FilterSide, FilterTop, FilterSlider, FilterTime, FilterJitter, FilterApply,
-    PowerRefresh, PowerDisable, PowerRestore, PowerInfo, DeadzoneView, DeadzoneRefresh, DeadzoneApply, DeadzoneInfo, TestView, LedRefresh, Zone2, Zone3, DateFormat, Daylight, LedInfo, DeadzoneReload };
+    PowerRefresh, PowerDisable, PowerRestore, PowerInfo, DeadzoneView, DeadzoneRefresh, DeadzoneApply, DeadzoneInfo, TestView, LedRefresh, Zone2, Zone3, DateFormat, Daylight, LedInfo, DeadzoneReload, AutoCalibration, AutoCalibrationInfo };
 struct Child { HWND handle{}; int page{-1}; int x{}, y{}, w{}, h{}; bool stretchX{}, stretchY{}; };
 std::wstring Text(HWND window)
 {
@@ -93,15 +94,68 @@ struct Application {
     std::optional<DeadzoneSettings> deadzones;
     bool deadzoneTried{}, deadzoneDirty{};
     bool deadzoneReloading{};
+    bool autoCalibrationEnabled{true}, autoCalibrationApplying{};
+    ULONGLONG nextCalibrationCheck{};
+    CalibrationWatchdog calibrationWatchdog;
+    std::future<CalibrationObservation> autoCalibrationTask;
+    void PollAutoCalibration()
+    {
+        if(autoCalibrationTask.valid()) {
+            if(autoCalibrationTask.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return;
+            const bool wasApplying=autoCalibrationApplying;autoCalibrationApplying=false;
+            try {
+                auto observation=autoCalibrationTask.get();
+                if(wasApplying) {
+                    if(deadzones && observation.settings){deadzones=observation.settings;deadzoneView.Settings(deadzones->axes);}
+                    SetText(Item(AutoCalibrationInfo),L"Saved calibration restored automatically; attempt logged. Physical centring and game recovery still need checking.");
+                }else if(autoCalibrationEnabled && !deadzoneTask.valid() && !deadzoneDirty) {
+                    if(calibrationWatchdog.Observe(observation,GetTickCount64())) {
+                        const auto desired=*observation.settings;
+                        const auto directory=service.directory();
+                        const Json before{{"utc",last.utc},{"sequence",last.sequence},{"connected",last.connected},{"physical",StateJson(last.physical)}};
+                        autoCalibrationApplying=true;
+                        for(const int id:{DeadzoneView,DeadzoneApply,DeadzoneRefresh,DeadzoneReload})EnableIfChanged(Item(id),false);
+                        SetText(Item(AutoCalibrationInfo),L"Battlefield is running; driver calibration was missing on two checks. Restoring saved settings...");
+                        autoCalibrationTask=std::async(std::launch::async,[this,desired,directory,before]{
+                            const auto logs=directory/L"calibration-recovery";std::filesystem::create_directories(logs);
+                            const auto file=logs/(std::to_wstring(Qpc())+L".json");
+                            Json evidence{{"schema",1},{"utc",UtcNow()},{"reason","driver-calibration-path-empty-on-two-checks"},
+                                {"calibration_file",Utf8(desired.file.wstring())},{"before",before},{"recovery_verified",false},{"result","attempting"}};
+                            WriteJson(file,evidence);
+                            try {
+                                CalibrationObservation result;result.battlefieldRunning=true;
+                                result.settings=ReloadSavedDeadzones(desired,directory);result.reloaded=true;
+                                const auto after=service.Read();
+                                evidence["result"]="driver-reload-accepted-file-unchanged";
+                                evidence["after"]={{"utc",after.utc},{"sequence",after.sequence},{"connected",after.connected},{"physical",StateJson(after.physical)}};
+                                WriteJson(file,evidence);return result;
+                            }catch(const std::exception& error){evidence["result"]="failed";evidence["error"]=error.what();WriteJson(file,evidence);throw;}
+                        });
+                        return;
+                    }
+                    SetText(Item(AutoCalibrationInfo),calibrationWatchdog.Paused()?L"Automatic reload limit reached. Toggle the option off/on to re-arm after checking the device.":
+                        !observation.battlefieldRunning?L"Automatic restore armed. Waiting for Battlefield 3 or 4; axis positions never trigger a reload.":
+                        !observation.settings?L"Waiting for one connected original X52.":
+                        observation.settings->activeFile.empty()?L"Saved calibration is missing from the driver. Confirming loss / waiting for cooldown...":
+                        L"Battlefield detected. Saved calibration is active; watching for it to be lost.");
+                }
+            }catch(const std::exception& error){calibrationWatchdog.Pause();SetText(Item(AutoCalibrationInfo),L"Automatic restore paused: "+Wide(error.what()));}
+            if(wasApplying){EnableIfChanged(Item(DeadzoneView),deadzones.has_value());EnableIfChanged(Item(DeadzoneRefresh),true);EnableIfChanged(Item(DeadzoneReload),deadzones.has_value()&&!deadzoneDirty);}
+        }
+        if(!autoCalibrationEnabled || calibrationWatchdog.Paused() || deadzoneTask.valid() || deadzoneDirty || GetTickCount64()<nextCalibrationCheck)return;
+        nextCalibrationCheck=GetTickCount64()+2000;
+        autoCalibrationTask=std::async(std::launch::async,ObserveBattlefieldCalibration);
+    }
     void StartDeadzones(bool apply=false, bool reload=false)
     {
-        if(deadzoneTask.valid())return;
+        if(deadzoneTask.valid() || autoCalibrationApplying)return;
         deadzoneTried=true;
         if((apply || reload) && !deadzones)return;
         if(reload && deadzoneDirty)return;
         deadzoneReloading=reload;
-        if(apply)deadzones->axes=deadzoneView.Settings();
-        const auto desired=deadzones;const auto directory=service.directory();
+        auto desired=deadzones;
+        if(apply)desired->axes=deadzoneView.Settings();
+        const auto directory=service.directory();
         EnableIfChanged(Item(DeadzoneView),false);EnableIfChanged(Item(DeadzoneApply),false);EnableIfChanged(Item(DeadzoneRefresh),false);
         EnableIfChanged(Item(DeadzoneReload),false);
         SetText(Item(DeadzoneInfo),reload?L"Reloading saved calibration without changing limits. This is not a USB or firmware reset...":apply?L"Saving calibration backup, applying and checking readback...":L"Reading Logitech driver calibration...");
@@ -119,8 +173,12 @@ struct Application {
         if(!deadzoneTask.valid() || deadzoneTask.wait_for(std::chrono::seconds(0))!=std::future_status::ready)return;
         try {deadzones=deadzoneTask.get();deadzoneView.Settings(deadzones->axes);deadzoneDirty=false;
             EnableIfChanged(Item(DeadzoneView),true);
-            SetText(Item(DeadzoneInfo),deadzoneReloading?L"Saved calibration reloaded; file and limits unchanged. Check centred X/Y in Test and in-game; recovery is not verified.":L"Driver calibration loaded. Drag to edit; Apply saves to the X52 driver. Refresh discards pending edits.");
-        }catch(const std::exception& error){deadzones.reset();SetText(Item(DeadzoneInfo),L"Deadzones unavailable: "+Wide(error.what()));}
+            SetText(Item(DeadzoneInfo),deadzoneReloading?L"Saved calibration reloaded; file and limits unchanged. Check centred X/Y in Test and in-game; recovery is not verified.":deadzones->activeFile.empty()?L"Saved deadzones loaded for editing; not currently active in the driver. Apply saves your edits; Reload activates the saved settings.":L"Driver calibration loaded. Drag to edit; Apply saves to the X52 driver. Refresh discards pending edits.");
+        }catch(const std::exception& error){
+            EnableIfChanged(Item(DeadzoneView),deadzones.has_value());
+            EnableIfChanged(Item(DeadzoneApply),deadzones.has_value()&&deadzoneDirty);
+            SetText(Item(DeadzoneInfo),(deadzones?L"Edits retained. ":L"Deadzones unavailable: ")+Wide(error.what()));
+        }
         EnableIfChanged(Item(DeadzoneRefresh),true);
         EnableIfChanged(Item(DeadzoneReload),deadzones.has_value()&&!deadzoneDirty);
     }
@@ -448,7 +506,17 @@ struct Application {
         Add(L"STATIC",L"Test the driver-reported axes, buttons and hats. No mapper smoothing is applied to this view.",0,7,24,220,952,28,0,true);
         testView.Attach(Add(L"STATIC",L"",TestView,7,24,265,952,410,0,true,true),theme,false);
         Add(L"STATIC",L"Drag the four handles: minimum, centre low, centre high, maximum. Red marks the reported input.",0,8,24,215,952,24,0,true);
-        Add(L"STATIC",L"Keyboard: Up/Down choose axis; Space chooses handle; Left/Right adjust; Shift makes larger steps.",0,8,24,245,952,24,0,true);
+        Add(L"BUTTON",L"Auto-restore lost calibration while Battlefield 3 / 4 is running",AutoCalibration,8,24,245,952,24,BS_AUTOCHECKBOX|WS_TABSTOP,true);
+        Add(L"STATIC",L"Automatic restore watches the driver calibration, not stick position.",AutoCalibrationInfo,8,24,710,952,22,0,true);
+        try {
+            const auto file=service.directory()/L"calibration-recovery.json";
+            if(std::filesystem::exists(file)) {
+                if(std::filesystem::file_size(file)>1024)throw std::runtime_error("Recovery preferences exceed 1 KiB");
+                std::ifstream stream(file);Json settings;stream>>settings;
+                autoCalibrationEnabled=settings.at("enabled").get<bool>();
+            }
+        }catch(const std::exception& error){autoCalibrationEnabled=false;SetText(Item(AutoCalibrationInfo),L"Recovery preferences unavailable: "+Wide(error.what()));}
+        Check(AutoCalibration,autoCalibrationEnabled);
         deadzoneView.Attach(Add(L"STATIC",L"",DeadzoneView,8,24,280,952,340,WS_TABSTOP|SS_NOTIFY,true,true),theme,true);
         EnableIfChanged(Item(DeadzoneView),false);
         Add(L"BUTTON",L"Refresh from driver",DeadzoneRefresh,8,24,635,245,30,WS_TABSTOP);
@@ -523,6 +591,7 @@ struct Application {
         PollMfd();
         PollPower();
         PollDeadzones();
+        PollAutoCalibration();
         if (page == 7) testView.Inputs(last.physical,last.connected);
         if (page == 8) deadzoneView.Inputs(last.physical,last.connected);
         SetText(Item(LedInfo),mfdSettings ? L"LED settings are read back from the driver after each change." : Text(Item(MfdInfo)));
@@ -655,6 +724,14 @@ struct Application {
         case DeadzoneApply: StartDeadzones(true); break;
         case DeadzoneView: deadzoneDirty=true; EnableIfChanged(Item(DeadzoneApply),deadzones.has_value()&&!deadzoneTask.valid()); EnableIfChanged(Item(DeadzoneReload),false); SetText(Item(DeadzoneInfo),L"Pending changes. Apply writes driver calibration; Refresh discards these edits.");break;
         case DeadzoneReload: StartDeadzones(false,true);break;
+        case AutoCalibration:
+            try {
+                const bool enabled=Checked(AutoCalibration);
+                WriteJson(service.directory()/L"calibration-recovery.json",{{"schema",1},{"enabled",enabled}});
+                autoCalibrationEnabled=enabled;calibrationWatchdog=CalibrationWatchdog{};nextCalibrationCheck=0;
+                SetText(Item(AutoCalibrationInfo),enabled?L"Automatic restore armed for Battlefield. Two missing-path checks are required.":L"Automatic restore is off.");
+            }catch(const std::exception& error){Check(AutoCalibration,autoCalibrationEnabled);SetText(Item(AutoCalibrationInfo),L"Could not save recovery preference: "+Wide(error.what()));}
+            break;
         case LedRefresh: StartMfd();break;
         case Daylight: StartMfd(std::pair{MfdOption::Daylight,static_cast<DWORD>(Checked(Daylight))});break;
         case Zone2: case Zone3: case DateFormat: {

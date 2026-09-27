@@ -13,12 +13,16 @@ struct AxisDeadzone {
 struct DeadzoneSettings {
     std::wstring devicePath;
     std::filesystem::path file;
+    // May be empty after reconnect: saved settings can still be edited on disk.
+    std::filesystem::path activeFile;
     std::string original;
     std::array<AxisDeadzone, 9> axes;
 };
 void ValidateDeadzone(const AxisDeadzone& axis);
 std::array<AxisDeadzone,9> DecodeDeadzones(const Pr0Node& root);
 Pr0Node UpdateDeadzones(Pr0Node root, const std::array<AxisDeadzone,9>& axes);
+// Read-only discovery; refuses ambiguous, invalid or non-regular saved files.
+std::filesystem::path FindSavedX52Calibration(const std::filesystem::path& directory);
 DeadzoneSettings ReadDeadzones(const std::wstring& devicePath);
 DeadzoneSettings ApplyDeadzones(const DeadzoneSettings& desired, const std::filesystem::path& dataDirectory);
 // Reapply the current saved envelope without changing its centre or limits.

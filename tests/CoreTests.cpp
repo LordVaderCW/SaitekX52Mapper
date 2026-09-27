@@ -13,6 +13,7 @@ void ScrollbarTests();
 void ThemeTests();
 void PowerManagementTests();
 void PropertiesTests();
+void CalibrationWatchdogTests();
 
 namespace {
 void Require(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -22,6 +23,7 @@ void Tests()
     ThemeTests();
     PowerManagementTests();
     PropertiesTests();
+    CalibrationWatchdogTests();
     using namespace x52;
     {
         std::wstring executable(32768, L'\0');
